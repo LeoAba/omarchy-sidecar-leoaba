@@ -14,7 +14,8 @@ Panel {
   //   omarchy-shell sidecar toggleConnection
   manageIpc: false
 
-  readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-sidecar"
+  // The sender ships inside this plugin folder (bin/omarchy-sidecar).
+  readonly property string cli: decodeURIComponent(String(Qt.resolvedUrl("bin/omarchy-sidecar")).replace(/^file:\/\//, ""))
   readonly property bool scanOnOpen: setting("scanOnOpen", true) === true
 
   // ------------------------------------------------------------------- state
@@ -33,7 +34,7 @@ Panel {
     var w = Math.floor(Number(wh[0]) * f / 2) * 2, h = Math.floor(Number(wh[1]) * f / 2) * 2
     var note = quality === "sharp" ? "native pixels · crispest"
              : quality === "balanced" ? "56% of the pixels · slightly soft"
-             : "25% of the pixels · softest · lightest on the laptop"
+             : "25% of the pixels · softest"
     return w + "×" + h + " sent · " + note
   }
   property bool prefsLoaded: false

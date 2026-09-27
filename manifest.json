@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "leoaba.sidecar",
-  "name": "Sidecar",
-  "version": "0.1.0",
-  "author": "leoaba",
+  "id": "io.github.leoaba.sidecar",
+  "name": "Sidecar for iPad",
+  "version": "0.2.0",
+  "author": "Leo Aba",
   "license": "MIT",
-  "description": "Use an iPad running OpenDisplay as a wireless second display (omarchy-sidecar).",
+  "description": "Use an iPad as a second display, like macOS Sidecar: over Wi-Fi or USB, with touch input, via the free OpenDisplay iPad app.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Sidecar",
-    "description": "iPad as a second display: left-click for devices, right-click to connect/disconnect.",
+    "displayName": "Sidecar for iPad",
+    "description": "iPad as a second display: left-click for devices and quality, right-click to connect/disconnect.",
     "category": "Display",
     "allowMultiple": false,
     "defaultSection": "right",

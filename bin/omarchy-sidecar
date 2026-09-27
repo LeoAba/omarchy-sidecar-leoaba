@@ -46,8 +46,9 @@ LOG_FILE = STATE_DIR / "sidecar.log"
 LOG_MAX = 2 << 20   # trim sidecar.log past 2 MB ...
 LOG_KEEP = 1 << 20  # ... down to its newest 1 MB
 QUALITY_REQUEST = STATE_DIR / "sidecar-quality"  # `quality` writes it, then SIGUSR1s the sender
+# The touch helper is built by ../setup next to its source (pointer/).
 POINTER_BIN = Path(os.environ.get("SIDECAR_POINTER",
-                                  Path.home() / ".local/lib/omarchy-sidecar/sidecar-pointer"))
+                                  Path(__file__).resolve().parent.parent / "pointer" / "sidecar-pointer"))
 
 QUALITY = {"sharp": 1.0, "balanced": 0.75, "light": 0.5}
 FPS = 60
