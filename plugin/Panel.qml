@@ -106,6 +106,7 @@ Panel {
   function setQuality(q) {
     quality = q
     savePrefs()
+    if (active) Quickshell.execDetached([cli, "quality", q])  // live, no reconnect
   }
 
   function beginHostEntry() {
@@ -429,7 +430,7 @@ Panel {
           spacing: Style.space(10)
 
           PanelSectionHeader {
-            text: "QUALITY · APPLIES ON NEXT CONNECT"
+            text: "QUALITY"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }

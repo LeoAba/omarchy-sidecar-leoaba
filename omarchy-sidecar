@@ -11,6 +11,7 @@ touch, pencil and scroll events into pointer input on that output.
   omarchy-sidecar list [--json]
   omarchy-sidecar connect [TARGET] [--usb|--wifi] [--quality sharp|balanced|light]
                           [--position right|left|above|below] [--background]
+  omarchy-sidecar quality sharp|balanced|light   (live, while connected)
   omarchy-sidecar stop
   omarchy-sidecar status [--json]
 
@@ -42,6 +43,7 @@ OUTPUT_PREFIX = "SIDECAR-"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "omarchy"
 STATE_FILE = STATE_DIR / "sidecar.json"
 LOG_FILE = STATE_DIR / "sidecar.log"
+QUALITY_REQUEST = STATE_DIR / "sidecar-quality"  # `quality` writes it, then SIGUSR1s the sender
 POINTER_BIN = Path(os.environ.get("SIDECAR_POINTER",
                                   Path.home() / ".local/lib/omarchy-sidecar/sidecar-pointer"))
 
@@ -356,6 +358,7 @@ class Encoder:
         self.lock = threading.Lock()
         self.started_at = 0.0
         self.crf = 18
+        self.size = None  # (w, h) to scale to before encoding; None = output size
 
     def start(self):
         with self.lock:
@@ -373,7 +376,8 @@ class Encoder:
         params = (f"aud=1:repeat-headers=1:keyint={FPS * 10}:min-keyint={FPS * 10}:scenecut=0:"
                   "level=5.1:threads=1")
         params += os.environ.get("SIDECAR_X264", "")  # e.g. ":threads=0" to experiment
-        cmd = ["wf-recorder", "-o", self.output, "-c", "libx264", "-x", "yuv420p", "-b", "0",
+        scale = ["-F", f"scale={self.size[0]}:{self.size[1]}:flags=bicubic"] if self.size else []
+        cmd = ["wf-recorder", "-o", self.output, *scale, "-c", "libx264", "-x", "yuv420p", "-b", "0",
                "-p", "preset=ultrafast", "-p", "tune=zerolatency", "-p", f"crf={self.crf}",
                "-p", f"x264-params={params}", "-m", "h264", "-f", "pipe:1", "-y"]
         self.stop_flag = threading.Event()
@@ -480,6 +484,8 @@ class Session:
         self.frames_cv = threading.Condition()
         self.need_idr = True
         self.stopping = threading.Event()
+        self.hello = None
+        self.quality_changed = threading.Event()
         self.stats = {"frames": 0, "bytes": 0, "t": time.time()}
         self.fps = self.mbps = 0.0
         self.panel = None
@@ -642,7 +648,8 @@ class Session:
 
     # -- display ----------------------------------------------------------
 
-    def configure(self, hello):
+    def configure(self, hello, welcome=True):
+        self.hello = hello
         pw, ph = int(hello["pixelsWide"]), int(hello["pixelsHigh"])
         ui_scale = float(hello.get("scale", 2)) or 2
         # Respect the receiver's decode ceiling.
@@ -650,15 +657,28 @@ class Session:
         fit = 1.0
         if mw and mh:
             fit = min(1.0, float(mw) / pw, float(mh) / ph)
-        factor = min(self.quality, fit)  # the user's choice, on any transport
-        w, h = int(pw * factor) // 2 * 2, int(ph * factor) // 2 * 2
-        scale = round(ui_scale * factor * 4) / 4 or 1  # keeps logical size ≈ iPad points
+        # The output always renders at the panel's pixels (so the desktop layout
+        # never changes); quality only sets the size the encoder scales down to.
+        # Resizing a headless output live stalls Hyprland's screencopy of it.
+        ow, oh = int(pw * fit) // 2 * 2, int(ph * fit) // 2 * 2
+        f = min(self.quality, fit) / fit
+        w, h = int(ow * f) // 2 * 2, int(oh * f) // 2 * 2
+        scale = round(ui_scale * fit * 4) / 4 or 1  # keeps logical size ≈ iPad points
         self.panel = f"{pw}x{ph}"
         self.video = f"{w}x{h}"
-        self.output.ensure(w, h, scale)
-        log(f"display {self.output.name}: {w}x{h} @ scale {scale:g} (panel {pw}x{ph}, ui {ui_scale:g}) "
-            f"over {self.transport}")
-        self.send_json(type="welcome", pv=PV, min=1)
+        if self.output.mode and self.output.mode != (ow, oh, scale):
+            # e.g. rotation: recreate rather than resize (see above)
+            if self.encoder:
+                self.encoder.stop()
+            self.output.remove()
+            self.output.mode = None
+        if self.output.mode != (ow, oh, scale):
+            self.output.ensure(ow, oh, scale)
+        self.encoder.size = (w, h) if (w, h) != (ow, oh) else None
+        log(f"display {self.output.name}: {ow}x{oh} @ scale {scale:g}, encoding {w}x{h} "
+            f"({self.quality_name}; panel {pw}x{ph}, ui {ui_scale:g}) over {self.transport}")
+        if welcome:
+            self.send_json(type="welcome", pv=PV, min=1)
         self.send_json(type="streamConfig", codec="h264", width=w, height=h, framesPerSecond=FPS)
         self.encoder.crf = CRF
         self._restart_encoder()
@@ -688,6 +708,9 @@ class Session:
                 last_usb = now
                 if usb_devices():
                     raise Closed("cable")  # redial: dial() prefers USB
+            if self.quality_changed.is_set():
+                self.quality_changed.clear()
+                self.apply_quality_request()
             if self.last_scroll and now - self.last_scroll > SCROLL_IDLE:
                 self.ptr("S")
                 self.last_scroll = 0.0
@@ -736,6 +759,25 @@ class Session:
             log("PHONE-STATS", json.dumps(msg))
         elif t in ("sleeping", "closing"):
             raise Closed(t)
+
+    def apply_quality_request(self):
+        """Switch quality live: resize the output in place and restart the encoder.
+        The new SPS tells the receiver to rebuild its decoder (protocol 5.2)."""
+        try:
+            q = QUALITY_REQUEST.read_text().strip()
+        except OSError:
+            return
+        if q not in QUALITY or q == self.quality_name:
+            return
+        self.quality, self.quality_name = QUALITY[q], q
+        log("quality ->", q)
+        if self.hello:
+            # Stop capturing before the output changes size: a recorder that
+            # sees its output resized under it stalls.
+            if self.encoder:
+                self.encoder.stop()
+            self.configure(self.hello, welcome=False)
+            self.publish("streaming")
 
     def update_stats(self):
         now = time.time()
@@ -880,6 +922,17 @@ def cmd_stop(args):
     print("stopped")
 
 
+def cmd_quality(args):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    QUALITY_REQUEST.write_text(args.level + "\n")
+    pid = running_pid()
+    if pid:
+        os.kill(pid, signal.SIGUSR1)
+        print("switching to", args.level)
+    else:
+        print("not connected; saved for next time")
+
+
 def cmd_connect(args):
     if running_pid():
         cmd_stop(args)
@@ -914,6 +967,7 @@ def cmd_connect(args):
             session.teardown_connection()
         signal.signal(signal.SIGTERM, on_signal)
         signal.signal(signal.SIGINT, on_signal)
+        signal.signal(signal.SIGUSR1, lambda *_: session.quality_changed.set())
 
         write_state(state="connecting", pid=os.getpid(), device=label, since=int(time.time()))
         message = session.run()
@@ -943,8 +997,11 @@ def main():
     ps = sub.add_parser("status")
     ps.add_argument("--json", action="store_true")
     sub.add_parser("stop")
+    pq = sub.add_parser("quality", help="change quality of the running session, live")
+    pq.add_argument("level", choices=QUALITY)
     args = p.parse_args()
-    {"list": cmd_list, "connect": cmd_connect, "status": cmd_status, "stop": cmd_stop}[args.cmd](args)
+    {"list": cmd_list, "connect": cmd_connect, "status": cmd_status, "stop": cmd_stop,
+     "quality": cmd_quality}[args.cmd](args)
 
 
 if __name__ == "__main__":
