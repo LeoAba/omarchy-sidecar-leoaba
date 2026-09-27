@@ -51,7 +51,7 @@ PING_INTERVAL = 2.0
 DEAD_AFTER = 5.0
 RECONNECT_GRACE = 10.0
 USB_POLL = 2.0
-CRF = {"USB": 15, "Wi-Fi": 18}  # the cable has bandwidth to spare
+CRF = 18  # same on cable and Wi-Fi: 15 on USB looked no better and cost encode time
 USBMUXD = os.environ.get("USBMUXD_SOCKET_ADDRESS", "/var/run/usbmuxd")
 SLEEP_WAIT = 30 * 60.0
 SCROLL_IDLE = 0.12
@@ -239,6 +239,14 @@ def monitors():
     return json.loads(hyprctl("-j", "monitors", "all"))
 
 
+def cursor_pos():
+    try:
+        c = json.loads(hyprctl("-j", "cursorpos"))
+        return int(c["x"]), int(c["y"])
+    except (RuntimeError, ValueError, KeyError):
+        return None
+
+
 def remove_stale_outputs():
     for m in monitors():
         if m["name"].startswith(OUTPUT_PREFIX):
@@ -253,10 +261,14 @@ class HeadlessOutput:
 
     def ensure(self, width, height, scale):
         names = [m["name"] for m in monitors()]
+        before = cursor_pos()
         if self.name not in names:
             hyprctl("output", "create", "headless", self.name)
         self.mode = (width, height, scale)
         self.apply()
+        # Hyprland warps the pointer when an output appears; put it back.
+        if before and cursor_pos() != before:
+            hyprctl("dispatch", f"hl.dsp.cursor.move({{ x = {before[0]}, y = {before[1]} }})", check=False)
 
     def apply(self):
         w, h, scale = self.mode
@@ -271,8 +283,47 @@ class HeadlessOutput:
                 return (m["width"], m["height"]) == self.mode[:2]
         return False
 
+    def cursor_target(self):
+        """Where the pointer should be once this output is gone: where it is now
+        if it's on another monitor, else the facing edge of the neighbouring
+        monitor at the same relative height/width. None if unknown."""
+        try:
+            mons = monitors()
+        except (RuntimeError, ValueError):
+            return None
+        cur = cursor_pos()
+        if not cur:
+            return None
+        rect = lambda m: (m["x"], m["y"], m["width"] / m["scale"], m["height"] / m["scale"])
+        me = next((m for m in mons if m["name"] == self.name), None)
+        others = [m for m in mons if m["name"] != self.name and not m["name"].startswith(OUTPUT_PREFIX)]
+        if not others:
+            return None
+        cx, cy = cur
+        if me:
+            x, y, w, h = rect(me)
+            if not (x <= cx < x + w and y <= cy < y + h):
+                return cur
+        else:
+            return cur
+        rx, ry = (cx - x) / w, (cy - y) / h
+        ox, oy, ow, oh = rect(next((m for m in others if m.get("focused")), others[0]))
+        tx, ty = {
+            "right": (ox + ow - 2, oy + ry * oh),
+            "left": (ox + 1, oy + ry * oh),
+            "above": (ox + rx * ow, oy + 1),
+            "below": (ox + rx * ow, oy + oh - 2),
+        }[self.position]
+        return int(tx), int(ty)
+
     def remove(self):
+        # Hyprland drops the pointer into a corner whenever an output goes away,
+        # even one the pointer isn't on, so put it back afterwards.
+        target = self.cursor_target()
         hyprctl("output", "remove", self.name, check=False)
+        if target:
+            hyprctl("dispatch", f"hl.dsp.cursor.move({{ x = {target[0]}, y = {target[1]} }})", check=False)
+        return target
 
 
 # -------------------------------------------------------------------- encoder
@@ -599,8 +650,7 @@ class Session:
         fit = 1.0
         if mw and mh:
             fit = min(1.0, float(mw) / pw, float(mh) / ph)
-        quality = QUALITY["sharp"] if self.transport == "USB" else self.quality
-        factor = min(quality, fit)
+        factor = min(self.quality, fit)  # the user's choice, on any transport
         w, h = int(pw * factor) // 2 * 2, int(ph * factor) // 2 * 2
         scale = round(ui_scale * factor * 4) / 4 or 1  # keeps logical size ≈ iPad points
         self.panel = f"{pw}x{ph}"
@@ -610,7 +660,7 @@ class Session:
             f"over {self.transport}")
         self.send_json(type="welcome", pv=PV, min=1)
         self.send_json(type="streamConfig", codec="h264", width=w, height=h, framesPerSecond=FPS)
-        self.encoder.crf = CRF.get(self.transport, CRF["Wi-Fi"])
+        self.encoder.crf = CRF
         self._restart_encoder()
         self.start_pointer()
 
@@ -710,11 +760,27 @@ class Session:
                 pass
 
     def teardown_display(self):
+        steps = []
+        t = time.time()
         if self.encoder:
             self.encoder.stop()
+        steps.append(("encoder", time.time() - t)); t = time.time()
         self.stop_pointer()
-        self.output.remove()
+        steps.append(("pointer", time.time() - t)); t = time.time()
+        park = ""
+        try:
+            windows = sum(1 for c in json.loads(hyprctl("-j", "clients"))
+                          if c.get("monitor") == next((m["id"] for m in monitors()
+                                                       if m["name"] == self.output.name), -1))
+        except (RuntimeError, ValueError):
+            windows = "?"
+        before = cursor_pos()
+        target = self.output.remove()
+        steps.append(("remove", time.time() - t))
+        park = f"cursor {before} -> {target}"
         self.output.mode = None
+        log("teardown", " ".join(f"{k} {v * 1000:.0f}ms" for k, v in steps),
+            f"| {windows} window(s) on it | {park} | cursor now {cursor_pos()}")
 
     def run(self):
         self.encoder = Encoder(self.output.name, self.on_frame)

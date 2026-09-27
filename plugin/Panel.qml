@@ -24,6 +24,18 @@ Panel {
   property bool scanning: false
   property string quality: "balanced"          // sharp | balanced | light
   property string lastTarget: ""
+  property string lastPanel: "2388x1668"       // iPad panel pixels, remembered from the last session
+
+  // One line describing the selected quality: what is sent and how it looks.
+  readonly property string qualitySpec: {
+    var wh = String(status.panel || lastPanel).split("x")
+    var f = quality === "sharp" ? 1.0 : quality === "balanced" ? 0.75 : 0.5
+    var w = Math.floor(Number(wh[0]) * f / 2) * 2, h = Math.floor(Number(wh[1]) * f / 2) * 2
+    var note = quality === "sharp" ? "native pixels · crispest"
+             : quality === "balanced" ? "56% of the pixels · slightly soft"
+             : "25% of the pixels · softest · lightest on the laptop"
+    return w + "×" + h + " sent · " + note
+  }
   property bool prefsLoaded: false
   property bool editingHost: false
   property int cursorIndex: 0
@@ -57,6 +69,11 @@ Panel {
     if (st === "sleeping") return "iPad locked — resumes on wake"
     if (st === "error") return "Error"
     return "Not connected"
+  }
+
+  onStatusChanged: {
+    var pn = String(status.panel || "")
+    if (prefsLoaded && /^[0-9]+x[0-9]+$/.test(pn) && pn !== lastPanel) { lastPanel = pn; savePrefs() }
   }
 
   // ---------------------------------------------------------------- controls
@@ -116,7 +133,7 @@ Panel {
 
   function savePrefs() {
     if (!prefsLoaded) return
-    prefsFile.setText(JSON.stringify({ quality: quality, lastTarget: lastTarget }, null, 2) + "\n")
+    prefsFile.setText(JSON.stringify({ quality: quality, lastTarget: lastTarget, lastPanel: lastPanel }, null, 2) + "\n")
   }
 
   function loadPrefs(raw) {
@@ -125,6 +142,7 @@ Panel {
     try { p = JSON.parse(raw || "{}") || {} } catch (e) { p = {} }
     if (p.quality === "sharp" || p.quality === "balanced" || p.quality === "light") quality = p.quality
     lastTarget = String(p.lastTarget || "")
+    if (/^[0-9]+x[0-9]+$/.test(String(p.lastPanel || ""))) lastPanel = p.lastPanel
     prefsLoaded = true
   }
 
@@ -425,6 +443,16 @@ Panel {
             ActionButton { index: 1; width: qualityRow.cellWidth; text: "Sharp"; active: root.quality === "sharp" }
             ActionButton { index: 2; width: qualityRow.cellWidth; text: "Balanced"; active: root.quality === "balanced" }
             ActionButton { index: 3; width: qualityRow.cellWidth; text: "Light"; active: root.quality === "light" }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: root.qualitySpec
+            color: Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            width: parent.width
           }
         }
 
