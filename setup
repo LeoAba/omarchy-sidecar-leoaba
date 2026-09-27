@@ -11,7 +11,7 @@ if [[ ${1:-} == --uninstall ]]; then
   "$root/bin/omarchy-sidecar" stop 2>/dev/null || true
   [[ -L $link && $(readlink "$link") == "$root/bin/omarchy-sidecar" ]] && rm -f "$link"
   make -s -C "$root/pointer" clean
-  echo "Sidecar for iPad: session stopped, CLI link and build files removed."
+  echo "LeoAba Sidecar: session stopped, CLI link and build files removed."
   echo "Remove the plugin itself with: omarchy plugin remove io.github.leoaba.sidecar"
   exit 0
 fi
@@ -39,7 +39,7 @@ if [[ ! -e $link || -L $link ]]; then
   ln -sfn "$root/bin/omarchy-sidecar" "$link"
 fi
 
-echo "Sidecar for iPad is ready."
+echo "LeoAba Sidecar is ready."
 echo "  1. Install OpenDisplay on the iPad: https://testflight.apple.com/join/3NYaY11c"
 echo "  2. Click the tablet icon in the bar (or: omarchy-sidecar connect)."
 command -v usbmuxd >/dev/null || echo "  Optional, for USB: omarchy pkg add usbmuxd, then replug the iPad and tap Trust."

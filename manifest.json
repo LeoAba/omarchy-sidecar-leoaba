@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "io.github.leoaba.sidecar",
-  "name": "Sidecar for iPad",
+  "name": "LeoAba Sidecar",
   "version": "0.2.0",
   "author": "Leo Aba",
   "license": "MIT",
-  "description": "Use an iPad as a second display, like macOS Sidecar: over Wi-Fi or USB, with touch input, via the free OpenDisplay iPad app.",
+  "description": "iPad as a second display for M1/M2 MacBooks on Omarchy, which cannot drive an external monitor under Asahi. Wi-Fi or USB, touch input, via the free OpenDisplay iPad app.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Sidecar for iPad",
+    "displayName": "LeoAba Sidecar",
     "description": "iPad as a second display: left-click for devices and quality, right-click to connect/disconnect.",
     "category": "Display",
     "allowMultiple": false,

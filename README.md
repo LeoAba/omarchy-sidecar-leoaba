@@ -1,8 +1,10 @@
-# Sidecar for iPad
+# LeoAba Sidecar
 
 Use an iPad as a second display for [Omarchy](https://omarchy.org), the way macOS Sidecar does. It connects over Wi-Fi or USB, and touch works as a mouse.
 
-![Sidecar for iPad widget](preview.png)
+**Made for Apple Silicon M1 and M2 MacBooks running Omarchy on Asahi Linux.** Their USB-C ports can't drive an external display under Linux yet (no DisplayPort alt mode), so an iPad is the only second screen you can get. Nothing in the code is M1-specific, and it will probably run on other Omarchy machines, but **it has only been tested on a 13" M1 MacBook Pro (2020)** with an 11" iPad Pro. Reports from M2 owners are very welcome.
+
+![LeoAba Sidecar widget](preview.png)
 
 A bar widget creates a virtual monitor sized to your iPad and streams it to the free **OpenDisplay** app on the iPad. Taps, drags, Apple Pencil and two-finger scroll come back as pointer input. Drag windows onto it, or move a workspace there, like any other monitor.
 
@@ -12,12 +14,12 @@ A bar widget creates a virtual monitor sized to your iPad and streams it to the 
 - On the iPad: [OpenDisplay](https://github.com/peetzweg/opendisplay), free on [TestFlight](https://testflight.apple.com/join/3NYaY11c).
 - **Wi-Fi:** the iPad and the computer must be on the same network. Phone hotspots may block device-to-device traffic.
 - **USB (optional):** `usbmuxd` (`omarchy pkg add usbmuxd`). After installing it, replug the iPad and tap **Trust**.
-- Packages the setup script checks for, and installs with `omarchy pkg add` if any are missing: `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`.
+- Packages the setup script checks for, and installs with `omarchy pkg add` if any are missing: `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`. [DEPENDENCIES.md](DEPENDENCIES.md) lists every package it uses, with the versions it was tested on.
 
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/LeoAba/omarchy-sidecar --enable
+omarchy plugin add https://github.com/LeoAba/leoaba-sidecar --enable
 ~/.config/omarchy/plugins/io.github.leoaba.sidecar/setup
 ```
 
@@ -64,7 +66,9 @@ State and a log live in `~/.local/state/omarchy/sidecar*`. The log caps itself a
 
 ## Known issues
 
-- **Long sessions slow Hyprland 0.56.2 down.** Capturing a virtual monitor for a long time makes Hyprland use more and more CPU. The frame rate drops, and disconnecting can freeze the desktop for a few seconds. Hyprland recovers by itself afterwards. This looks like an upstream screencopy bug ([hyprwm/Hyprland#16361](https://github.com/hyprwm/Hyprland/pull/16361), merged after 0.56.2).
+- **Long sessions slow Hyprland 0.56.2 down. This is the one open problem.** Capturing a virtual monitor for a long time makes Hyprland use more and more CPU. The frame rate drops, and disconnecting can freeze the desktop for a few seconds. Hyprland recovers by itself afterwards.
+  - It looks like an upstream screencopy bug that's already fixed ([hyprwm/Hyprland#16361](https://github.com/hyprwm/Hyprland/pull/16361), merged after 0.56.2). I'm waiting for the Hyprland release that includes it, to confirm.
+  - **Any help here is very welcome:** if you know this area of Hyprland, have tested a newer build, or have seen the same thing with other screencopy tools, please open an issue. `tools/stall-probe.py` records the stalls.
 - **The pointer is drawn into the video,** so it moves at video frame rate rather than touch rate.
 - **Software encoding only:** there's no hardware encoder on Asahi. Sharp at 2388×1668 costs about 1–1.5 CPU cores for capture and encoding.
 
@@ -78,6 +82,10 @@ omarchy plugin remove io.github.leoaba.sidecar
 ## Development
 
 `tools/fake-receiver.py` stands in for the iPad app, `tools/fake-usbmuxd.py` for a USB-connected iPad, and `tools/stall-probe.py` watches for desktop stalls. `SIDECAR_DUMP=file` saves the exact stream sent; `SIDECAR_X264=":key=value"` appends x264 options.
+
+## Thank you
+
+I'm so happy and grateful to be part of Omarchy. Thank you to everyone who has put so much work into it, and into Hyprland, Quickshell, Asahi Linux and OpenDisplay, which this plugin stands on. It turned a MacBook I couldn't plug a monitor into into a machine with a second screen, and building it has been a joy.
 
 ## License
 
