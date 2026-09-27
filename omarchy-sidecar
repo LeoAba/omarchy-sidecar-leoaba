@@ -43,6 +43,8 @@ OUTPUT_PREFIX = "SIDECAR-"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "omarchy"
 STATE_FILE = STATE_DIR / "sidecar.json"
 LOG_FILE = STATE_DIR / "sidecar.log"
+LOG_MAX = 2 << 20   # trim sidecar.log past 2 MB ...
+LOG_KEEP = 1 << 20  # ... down to its newest 1 MB
 QUALITY_REQUEST = STATE_DIR / "sidecar-quality"  # `quality` writes it, then SIGUSR1s the sender
 POINTER_BIN = Path(os.environ.get("SIDECAR_POINTER",
                                   Path.home() / ".local/lib/omarchy-sidecar/sidecar-pointer"))
@@ -59,6 +61,23 @@ SLEEP_WAIT = 30 * 60.0
 SCROLL_IDLE = 0.12
 MAX_QUEUED_FRAMES = 3
 DUMP = open(os.environ["SIDECAR_DUMP"], "ab", buffering=0) if os.environ.get("SIDECAR_DUMP") else None
+
+
+def trim_log():
+    """Keep sidecar.log under LOG_MAX. The sender's stderr is an O_APPEND fd on
+    it, so rewriting it in place is safe: later writes still land at the end."""
+    try:
+        if LOG_FILE.stat().st_size <= LOG_MAX:
+            return
+        with open(LOG_FILE, "r+b") as f:
+            f.seek(-LOG_KEEP, os.SEEK_END)
+            tail = f.read()
+            tail = tail[tail.find(b"\n") + 1:]  # start on a whole line
+            f.seek(0)
+            f.write(tail)
+            f.truncate()
+    except OSError:
+        pass
 
 
 def log(*args):
@@ -694,7 +713,7 @@ class Session:
         video = threading.Thread(target=self.video_loop, args=(sock,), daemon=True)
         video.start()
         buf = bytearray()
-        last_ping = last_check = last_usb = time.time()
+        last_ping = last_check = last_usb = last_trim = time.time()
         while not self.stopping.is_set():
             now = time.time()
             if now - self.last_rx > DEAD_AFTER:
@@ -714,6 +733,9 @@ class Session:
             if self.last_scroll and now - self.last_scroll > SCROLL_IDLE:
                 self.ptr("S")
                 self.last_scroll = 0.0
+            if now - last_trim > 60:
+                last_trim = now
+                trim_log()
             if now - last_check > 5 and self.output.mode:
                 last_check = now
                 if not self.output.matches():  # e.g. Hyprland config reload dropped our rule
@@ -943,6 +965,7 @@ def cmd_connect(args):
         argv += ["--quality", args.quality, "--position", args.position]
         argv += ["--usb"] if args.usb else ["--wifi"] if args.wifi else []
         write_state(state="connecting", device=args.target or "iPad", since=int(time.time()))
+        trim_log()
         with open(LOG_FILE, "a") as logf:
             subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True)
         print("connecting in background; log:", LOG_FILE)
