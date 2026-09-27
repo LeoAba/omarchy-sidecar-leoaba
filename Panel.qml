@@ -46,7 +46,6 @@ Panel {
   readonly property bool active: st === "streaming" || st === "connecting" || st === "reconnecting" || st === "sleeping"
   readonly property bool streaming: st === "streaming"
 
-  readonly property string glyphTablet: String.fromCodePoint(0xF04F6)    // md-tablet
   readonly property string glyphRefresh: String.fromCodePoint(0xF0450)   // md-restore
   readonly property string glyphClose: String.fromCodePoint(0xF0156)     // md-close
   readonly property string glyphLink: String.fromCodePoint(0xF0337)      // md-link
@@ -233,8 +232,16 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.glyphTablet
-    dimmed: !root.active
+    // Same treatment as the AirPods widget: solid gray when idle, not see-through.
+    iconComponent: Component {
+      Item {
+        IPadIcon {
+          anchors.centerIn: parent
+          iconSize: Style.space(14)
+          color: root.active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.55)
+        }
+      }
+    }
     tooltipText: ""
     onPressed: function(b) {
       if (b === Qt.RightButton) root.toggleConnection()
@@ -303,14 +310,10 @@ Panel {
           width: parent.width
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerSwitch.implicitHeight)
 
-          Text {
+          IPadIcon {
             id: heroIcon
-            textFormat: Text.PlainText
-            text: root.glyphTablet
-            color: root.bar.foreground
-            opacity: root.active ? 1 : 0.5
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.display
+            iconSize: Style.font.display * 1.15
+            color: root.active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.55)
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
           }
@@ -586,13 +589,10 @@ Panel {
       anchors.rightMargin: Style.space(10)
       implicitHeight: Math.max(devIcon.implicitHeight, devInfo.implicitHeight)
 
-      Text {
+      IPadIcon {
         id: devIcon
-        textFormat: Text.PlainText
-        text: root.glyphTablet
-        color: row.isCurrent ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.5)
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.heading
+        iconSize: Style.font.heading * 1.2
+        color: row.isCurrent ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.55)
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
       }

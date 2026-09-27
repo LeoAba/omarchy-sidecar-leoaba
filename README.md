@@ -1,6 +1,6 @@
-# LeoAba Sidecar
+# LeoAba Sidecar for Omarchy
 
-Use an iPad as a second display for [Omarchy](https://omarchy.org), the way macOS Sidecar does. It connects over Wi-Fi or USB, and touch works as a mouse.
+Use an iPad as a second display for [Omarchy](https://omarchy.org), the way macOS Sidecar does. It syncs over **Wi-Fi or a USB-C cable**, and touch works as a mouse.
 
 **Made for Apple Silicon M1 and M2 MacBooks running Omarchy on Asahi Linux.** Their USB-C ports can't drive an external display under Linux yet (no DisplayPort alt mode), so an iPad is the only second screen you can get. Nothing in the code is M1-specific, and it will probably run on other Omarchy machines, but **it has only been tested on a 13" M1 MacBook Pro (2020)** with an 11" iPad Pro. Reports from M2 owners are very welcome.
 
@@ -85,7 +85,7 @@ omarchy plugin remove io.github.leoaba.sidecar
 
 ## Thank you
 
-I'm so happy and grateful to be part of Omarchy. Thank you to everyone who has put so much work into it, and into Hyprland, Quickshell, Asahi Linux and OpenDisplay, which this plugin stands on. It turned a MacBook I couldn't plug a monitor into into a machine with a second screen, and building it has been a joy.
+I'm so happy and grateful to be part of Omarchy, and I really appreciate all the work that's been put into it. Thank you to everyone behind Omarchy, and to Hyprland, Quickshell, Asahi Linux and OpenDisplay, which this plugin stands on. My M1 couldn't use an external monitor, and now it has a second screen again :)
 
 ## License
 
