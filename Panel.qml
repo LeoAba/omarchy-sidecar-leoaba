@@ -15,6 +15,7 @@ Panel {
   manageIpc: false
 
   // The sender ships inside this plugin folder (bin/omarchy-sidecar).
+  readonly property string authorUrl: "https://linktr.ee/leoaba"
   readonly property string cli: decodeURIComponent(String(Qt.resolvedUrl("bin/omarchy-sidecar")).replace(/^file:\/\//, ""))
   readonly property bool scanOnOpen: setting("scanOnOpen", true) === true
 
@@ -551,6 +552,26 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               anchors.verticalCenter: parent.verticalCenter
             }
+          }
+        }
+
+        // Tiny author credit, bottom right.
+        Text {
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: "leoaba"
+          color: Qt.darker(root.bar.foreground, creditMouse.containsMouse ? 1.1 : 1.8)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Math.round(Style.font.caption * 0.8)
+          font.underline: creditMouse.containsMouse
+
+          MouseArea {
+            id: creditMouse
+            anchors.fill: parent
+            anchors.margins: -Style.space(4)
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: { Qt.openUrlExternally(root.authorUrl); root.close() }
           }
         }
       }
