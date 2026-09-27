@@ -1,0 +1,885 @@
+#!/usr/bin/env python3
+"""omarchy-sidecar: use an iPad (or iPhone) as a second display for Hyprland.
+
+The iPad runs the free OpenDisplay receiver app, which listens on TCP 9000
+and advertises itself over Bonjour as _opensidecar._tcp. This sender dials
+it, creates a headless Hyprland output sized to the iPad's panel, captures
+that output with wf-recorder (libx264), streams it per the OpenDisplay wire
+protocol (see References/OpenDisplay-PROTOCOL.md), and turns the iPad's
+touch, pencil and scroll events into pointer input on that output.
+
+  omarchy-sidecar list [--json]
+  omarchy-sidecar connect [TARGET] [--usb|--wifi] [--quality sharp|balanced|light]
+                          [--position right|left|above|below] [--background]
+  omarchy-sidecar stop
+  omarchy-sidecar status [--json]
+
+TARGET is a device name or id from `list`, or HOST[:PORT]. Without a
+TARGET the first device found is used.
+"""
+
+import argparse
+import fcntl
+import ipaddress
+import json
+import os
+import plistlib
+import select
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+PORT = 9000
+PV = 3
+SERVICE = "_opensidecar._tcp"
+OUTPUT_PREFIX = "SIDECAR-"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "omarchy"
+STATE_FILE = STATE_DIR / "sidecar.json"
+LOG_FILE = STATE_DIR / "sidecar.log"
+POINTER_BIN = Path(os.environ.get("SIDECAR_POINTER",
+                                  Path.home() / ".local/lib/omarchy-sidecar/sidecar-pointer"))
+
+QUALITY = {"sharp": 1.0, "balanced": 0.75, "light": 0.5}
+FPS = 60
+PING_INTERVAL = 2.0
+DEAD_AFTER = 5.0
+RECONNECT_GRACE = 10.0
+USB_POLL = 2.0
+CRF = {"USB": 15, "Wi-Fi": 18}  # the cable has bandwidth to spare
+USBMUXD = os.environ.get("USBMUXD_SOCKET_ADDRESS", "/var/run/usbmuxd")
+SLEEP_WAIT = 30 * 60.0
+SCROLL_IDLE = 0.12
+MAX_QUEUED_FRAMES = 3
+DUMP = open(os.environ["SIDECAR_DUMP"], "ab", buffering=0) if os.environ.get("SIDECAR_DUMP") else None
+
+
+def log(*args):
+    print(time.strftime("%H:%M:%S"), *args, file=sys.stderr, flush=True)
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+# ----------------------------------------------------------------- state file
+
+def read_state():
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return {"state": "idle"}
+
+
+def write_state(**fields):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(fields, indent=2) + "\n")
+    tmp.replace(STATE_FILE)
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def running_pid():
+    s = read_state()
+    pid = s.get("pid")
+    if s.get("state") not in (None, "idle", "error") and pid and pid_alive(pid):
+        return int(pid)
+    return None
+
+
+# ------------------------------------------------------------------ discovery
+
+def _avahi_unescape(s):
+    out, i = [], 0
+    while i < len(s):
+        if s[i] == "\\" and i + 3 < len(s) and s[i + 1:i + 4].isdigit():
+            out.append(chr(int(s[i + 1:i + 4])))
+            i += 4
+        elif s[i] == "\\" and i + 1 < len(s):
+            out.append(s[i + 1])
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+def discover(timeout=4.0):
+    """Resolve _opensidecar._tcp services with avahi-browse. Returns a list of
+    {name, id, pv, host, port, addresses} with IPv4 addresses first."""
+    if not shutil.which("avahi-browse"):
+        raise SystemExit("avahi-browse not found (package: avahi)")
+    try:
+        out = subprocess.run(["avahi-browse", "-rpt", SERVICE], capture_output=True,
+                             text=True, timeout=timeout).stdout
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+    devices = {}
+    for line in out.splitlines():
+        f = line.split(";")
+        if len(f) < 10 or f[0] != "=":
+            continue
+        name, host, addr, port = _avahi_unescape(f[3]), f[6], f[7], int(f[8])
+        txt = {}
+        for part in f[9].split('" "'):
+            part = part.strip('"')
+            if "=" in part:
+                k, v = part.split("=", 1)
+                txt[k] = v
+        key = txt.get("id") or name
+        d = devices.setdefault(key, {"name": name, "id": txt.get("id"), "pv": int(txt.get("pv", 1)),
+                                     "host": host, "port": port, "addresses": []})
+        if addr not in d["addresses"]:
+            d["addresses"].append(addr)
+    for d in devices.values():
+        d["addresses"].sort(key=lambda a: (":" in a, a.startswith("fe80")))
+    return sorted(devices.values(), key=lambda d: d["name"].lower())
+
+
+def resolve_target(target):
+    """Return (label, id, [(host, port), ...]) for a name, id or HOST[:PORT]."""
+    if target:
+        host, sep, port = target.rpartition(":")
+        if not (sep and port.isdigit() and ":" not in host.strip("[]")):
+            host, port = target, str(PORT)
+        host = host.strip("[]")
+        try:
+            ipaddress.ip_address(host)
+            direct = True
+        except ValueError:
+            direct = "." in host and " " not in host
+        if direct:
+            return target, None, [(host, int(port))]
+    for d in discover():
+        if target in (None, "", d["name"], d["id"]) or (target and target.lower() == d["name"].lower()):
+            return d["name"], d["id"], [(a, d["port"]) for a in d["addresses"]]
+    raise LookupError(f"no OpenDisplay receiver found{' matching ' + repr(target) if target else ''}"
+                      " — is the app open on the iPad and on the same network?")
+
+
+# ------------------------------------------------------------------------ usb
+
+def _usbmux(msg, sock=None):
+    """One plist request to usbmuxd; returns (reply, socket)."""
+    s = sock or socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        if not sock:
+            s.settimeout(3)
+            s.connect(USBMUXD)
+        body = plistlib.dumps({"ClientVersionString": "omarchy-sidecar", "ProgName": "omarchy-sidecar",
+                               **msg})
+        s.sendall(struct.pack("<IIII", 16 + len(body), 1, 8, 1) + body)
+        head = b""
+        while len(head) < 16:
+            chunk = s.recv(16 - len(head))
+            if not chunk:
+                raise OSError("usbmuxd closed the connection")
+            head += chunk
+        n = struct.unpack("<IIII", head)[0] - 16
+        data = b""
+        while len(data) < n:
+            chunk = s.recv(n - len(data))
+            if not chunk:
+                raise OSError("usbmuxd closed the connection")
+            data += chunk
+        return plistlib.loads(data), s
+    except Exception:
+        if not sock:
+            s.close()
+        raise
+
+
+def usb_devices():
+    """iPads/iPhones attached by cable, as [(DeviceID, serial)]; [] if usbmuxd isn't running."""
+    try:
+        reply, s = _usbmux({"MessageType": "ListDevices"})
+        s.close()
+    except (OSError, ValueError):
+        return []
+    return [(d["DeviceID"], d.get("Properties", {}).get("SerialNumber", "?"))
+            for d in reply.get("DeviceList", [])
+            if d.get("Properties", {}).get("ConnectionType") == "USB"]
+
+
+def usb_connect(device_id, port=PORT):
+    """A byte pipe to TCP `port` on the device, through usbmuxd."""
+    reply, s = _usbmux({"MessageType": "Connect", "DeviceID": device_id,
+                        "PortNumber": socket.htons(port)})
+    if reply.get("Number") != 0:
+        s.close()
+        raise OSError(f"usbmuxd refused the connection (result {reply.get('Number')}) — "
+                      "is OpenDisplay open on the iPad?")
+    s.settimeout(None)
+    return s
+
+
+# ------------------------------------------------------------------- hyprland
+
+def hyprctl(*args, check=True):
+    r = subprocess.run(["hyprctl", *args], capture_output=True, text=True)
+    out = r.stdout.strip().lower()
+    if check and (r.returncode != 0 or out.startswith("error") or "can't" in out or "invalid" in out):
+        raise RuntimeError(f"hyprctl {' '.join(args)}: {r.stdout.strip() or r.stderr.strip()}")
+    return r.stdout
+
+
+def monitors():
+    return json.loads(hyprctl("-j", "monitors", "all"))
+
+
+def remove_stale_outputs():
+    for m in monitors():
+        if m["name"].startswith(OUTPUT_PREFIX):
+            hyprctl("output", "remove", m["name"], check=False)
+
+
+class HeadlessOutput:
+    def __init__(self, name, position):
+        self.name = name
+        self.position = position
+        self.mode = None
+
+    def ensure(self, width, height, scale):
+        names = [m["name"] for m in monitors()]
+        if self.name not in names:
+            hyprctl("output", "create", "headless", self.name)
+        self.mode = (width, height, scale)
+        self.apply()
+
+    def apply(self):
+        w, h, scale = self.mode
+        lua = (f'hl.monitor({{ output = "{self.name}", mode = "{w}x{h}@{FPS}", '
+               f'position = "auto-{self.position}", scale = {scale:g} }})')
+        hyprctl("eval", lua)
+
+    def matches(self):
+        for m in monitors():
+            if m["name"] == self.name:
+                # Hyprland may nudge the scale to one that divides the mode evenly.
+                return (m["width"], m["height"]) == self.mode[:2]
+        return False
+
+    def remove(self):
+        hyprctl("output", "remove", self.name, check=False)
+
+
+# -------------------------------------------------------------------- encoder
+
+def split_nals(buf):
+    """Split an Annex B buffer into (nal payloads, consumed-up-to index).
+    The last NAL is returned too; callers that may hold a partial NAL keep it."""
+    starts = []
+    i = buf.find(b"\x00\x00\x01")
+    while i != -1:
+        starts.append((i - 1 if i > 0 and buf[i - 1] == 0 else i, i + 3))
+        i = buf.find(b"\x00\x00\x01", i + 3)
+    nals = []
+    for k, (_, body) in enumerate(starts):
+        end = starts[k + 1][0] if k + 1 < len(starts) else len(buf)
+        nals.append(bytes(buf[body:end]))
+    return nals
+
+
+class Encoder:
+    """wf-recorder -> raw H.264 on a pipe -> whole access units via on_frame(bytes, is_idr)."""
+
+    def __init__(self, output, on_frame):
+        self.output = output
+        self.on_frame = on_frame
+        self.proc = None
+        self.thread = None
+        self.stop_flag = threading.Event()
+        self.sps = self.pps = None
+        self.lock = threading.Lock()
+        self.started_at = 0.0
+        self.crf = 18
+
+    def start(self):
+        with self.lock:
+            if self.alive() and time.time() - self.started_at < 0.5:
+                return  # a restart just happened; its first frame is an IDR anyway
+            self._stop()
+            self._start()
+
+    def _start(self):
+        # wf-recorder passes x264 no frame rate, so anything rate-based is
+        # computed against a bogus fps: VBV starved every IDR after the first
+        # into flat gray (the "gray screen"), and auto-level picked 6.2. So no
+        # VBV and an explicit level. One slice per picture, like the Mac
+        # sender. An IDR every 10 s is a safety net; `kf` restarts the encoder.
+        params = (f"aud=1:repeat-headers=1:keyint={FPS * 10}:min-keyint={FPS * 10}:scenecut=0:"
+                  "level=5.1:threads=1")
+        params += os.environ.get("SIDECAR_X264", "")  # e.g. ":threads=0" to experiment
+        cmd = ["wf-recorder", "-o", self.output, "-c", "libx264", "-x", "yuv420p", "-b", "0",
+               "-p", "preset=ultrafast", "-p", "tune=zerolatency", "-p", f"crf={self.crf}",
+               "-p", f"x264-params={params}", "-m", "h264", "-f", "pipe:1", "-y"]
+        self.stop_flag = threading.Event()
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     stdin=subprocess.DEVNULL)
+        self.started_at = time.time()
+        try:  # room for a whole keyframe, so ffmpeg never blocks mid-picture
+            fcntl.fcntl(self.proc.stdout.fileno(), 1031, 1 << 20)  # F_SETPIPE_SZ
+        except OSError:
+            pass
+        self.thread = threading.Thread(target=self._read, args=(self.proc, self.stop_flag), daemon=True)
+        self.thread.start()
+        log("encoder started", self.output)
+
+    def stop(self):
+        with self.lock:
+            self._stop()
+
+    def _stop(self):
+        self.stop_flag.set()
+        if self.proc and self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGINT)
+            try:
+                self.proc.wait(2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def _emit(self, nals):
+        au = [n for n in nals if n and (n[0] & 0x1F) not in (6, 9)]  # drop SEI + AUD
+        if not any((n[0] & 0x1F) in (1, 5) for n in au):
+            return
+        types = {n[0] & 0x1F for n in au}
+        idr = 5 in types
+        for n in au:
+            if n[0] & 0x1F == 7:
+                self.sps = n
+            elif n[0] & 0x1F == 8:
+                self.pps = n
+        if idr and 7 not in types and self.sps and self.pps:
+            au = [self.sps, self.pps] + au
+        self.on_frame(b"".join(b"\x00\x00\x00\x01" + n for n in au), idr)
+
+    def _read(self, proc, stop_flag):
+        fd = proc.stdout.fileno()
+        buf = bytearray()
+        pending = []  # NALs of the access unit being assembled
+        while not stop_flag.is_set():
+            ready, _, _ = select.select([fd], [], [], 0.004)
+            if ready:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                buf += chunk
+                nals = split_nals(buf)
+                if len(nals) <= 1:
+                    continue
+                last = buf.rfind(b"\x00\x00\x01")
+                cut = last - 1 if last > 0 and buf[last - 1] == 0 else last
+                complete, buf = nals[:-1], buf[cut:]
+            else:
+                # Pipe went quiet: ffmpeg flushes whole packets, so the buffer
+                # now ends on a NAL boundary and the picture is complete.
+                if not buf and not pending:
+                    continue
+                complete, buf = split_nals(buf), bytearray()
+            for n in complete:
+                if n and (n[0] & 0x1F) == 9 and pending:
+                    self._emit(pending)
+                    pending = []
+                pending.append(n)
+            if not ready and pending:
+                self._emit(pending)
+                pending = []
+
+
+# -------------------------------------------------------------------- session
+
+class Closed(Exception):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class Session:
+    def __init__(self, label, device_id, endpoints, quality, position, target, transport="auto"):
+        self.label = label
+        self.transport_mode = transport  # auto | usb | wifi
+        self.transport = None            # what the live connection runs over
+        self.device_id = device_id
+        self.endpoints = endpoints
+        self.target = target
+        self.quality = QUALITY[quality]
+        self.quality_name = quality
+        self.output = HeadlessOutput(OUTPUT_PREFIX + "iPad", position)
+        self.encoder = None
+        self.pointer = None
+        self.sock = None
+        self.send_lock = threading.Lock()
+        self.frames = []
+        self.frames_cv = threading.Condition()
+        self.need_idr = True
+        self.stopping = threading.Event()
+        self.stats = {"frames": 0, "bytes": 0, "t": time.time()}
+        self.fps = self.mbps = 0.0
+        self.panel = None
+        self.video = None  # encoded size, may be below the panel's
+        self.since = int(time.time())
+
+    # -- state ------------------------------------------------------------
+
+    def publish(self, state, message=""):
+        write_state(state=state, pid=os.getpid(), device=self.label, id=self.device_id,
+                    target=self.target, output=self.output.name, quality=self.quality_name,
+                    panel=self.panel, video=self.video, fps=round(self.fps, 1), mbps=round(self.mbps, 2),
+                    transport=self.transport, since=self.since, message=message)
+
+    # -- transport --------------------------------------------------------
+
+    def dial(self):
+        last = None
+        if self.transport_mode != "wifi":
+            for dev, serial in usb_devices():
+                try:
+                    s = usb_connect(dev)
+                    self.transport = "USB"
+                    log("connected over USB", serial)
+                    return s
+                except OSError as e:
+                    last = e
+        if self.transport_mode == "usb":
+            raise ConnectionError(f"no iPad on USB: {last or 'none attached (is usbmuxd installed?)'}")
+        for host, port in self.endpoints:
+            try:
+                s = socket.create_connection((host, port), timeout=5)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                s.settimeout(None)
+                self.transport = "Wi-Fi"
+                log("connected", host, port)
+                return s
+            except OSError as e:
+                last = e
+        raise ConnectionError(f"could not reach {self.label}: {last}")
+
+    def send(self, payload):
+        with self.send_lock:
+            if self.sock is None:  # torn down under a sending thread
+                raise OSError("not connected")
+            self.sock.sendall(struct.pack(">I", len(payload)) + payload)
+
+    def send_json(self, **msg):
+        self.send(json.dumps(msg, separators=(",", ":")).encode())
+
+    def recv_exact(self, n, buf):
+        while len(buf) < n:
+            r, _, _ = select.select([self.sock], [], [], 0.05)
+            if not r:
+                return None
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise Closed("eof")
+            buf += chunk
+            self.last_rx = time.time()
+        return buf
+
+    # -- video ------------------------------------------------------------
+
+    def on_frame(self, au, idr):
+        with self.frames_cv:
+            if self.need_idr and not idr:
+                return
+            if len(self.frames) >= MAX_QUEUED_FRAMES:
+                # Network can't keep up: drop the backlog and resync on an IDR.
+                self.frames.clear()
+                self.need_idr = True
+                if not idr:
+                    self.request_keyframe()
+                    return
+            self.need_idr = False
+            self.frames.append((now_ms(), au))
+            self.frames_cv.notify()
+
+    def request_keyframe(self):
+        # wf-recorder can't force an IDR; restarting the encoder yields one at once.
+        threading.Thread(target=self._restart_encoder, daemon=True).start()
+
+    def _restart_encoder(self):
+        with self.frames_cv:
+            self.need_idr = True
+            self.frames.clear()
+        if self.encoder:
+            self.encoder.start()
+
+    def video_loop(self, sock):
+        while not self.stopping.is_set() and self.sock is sock:
+            with self.frames_cv:
+                while not self.frames and not self.stopping.is_set() and self.sock is sock:
+                    self.frames_cv.wait(0.5)
+                if not self.frames:
+                    continue
+                cap, au = self.frames.pop(0)
+            prefix = json.dumps({"cap": cap, "snd": now_ms()}, separators=(",", ":")).encode()
+            try:
+                self.send(prefix + au)
+            except OSError:
+                return
+            self.stats["frames"] += 1
+            self.stats["bytes"] += len(au)
+            if DUMP:  # debug: exactly what the receiver got, playable with ffplay
+                DUMP.write(au)
+
+    # -- input ------------------------------------------------------------
+
+    def start_pointer(self):
+        self.stop_pointer()
+        if not POINTER_BIN.exists():
+            log("pointer helper missing:", POINTER_BIN, "— touch input disabled")
+            return
+        self.pointer = subprocess.Popen([str(POINTER_BIN), self.output.name], stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, text=True, bufsize=1)
+        if self.pointer.stdout.readline().strip() != "ready":
+            log("pointer helper failed to start")
+            self.pointer = None
+
+    def stop_pointer(self):
+        if self.pointer and self.pointer.poll() is None:
+            try:
+                self.pointer.stdin.write("q\n")
+                self.pointer.stdin.flush()
+                self.pointer.wait(1)
+            except (OSError, subprocess.TimeoutExpired):
+                self.pointer.kill()
+        self.pointer = None
+
+    def ptr(self, *cmds):
+        if not self.pointer:
+            return
+        try:
+            self.pointer.stdin.write("".join(c + "\n" for c in cmds))
+            self.pointer.stdin.flush()
+        except OSError:
+            self.pointer = None
+
+    def on_input(self, msg):
+        t = msg.get("type")
+        if t in ("touch", "pencil"):
+            x, y = float(msg.get("x", 0)), float(msg.get("y", 0))
+            phase = msg.get("phase")
+            move = f"m {x:.5f} {y:.5f}"
+            if phase in ("began", "down"):
+                self.ptr(move, "d")
+            elif phase in ("moved", "move", "hover"):
+                self.ptr(move)
+            elif phase in ("ended", "up"):
+                self.ptr(move, "u")
+            elif phase == "cancelled":
+                self.ptr("u")
+        elif t == "scroll":
+            scale = self.output.mode[2] if self.output.mode else 1
+            # Natural-scroll video pixels -> wayland axis (positive = scroll down).
+            self.ptr(f"s {-float(msg.get('dx', 0)) / scale:.2f} {-float(msg.get('dy', 0)) / scale:.2f}")
+            self.last_scroll = time.time()
+
+    # -- display ----------------------------------------------------------
+
+    def configure(self, hello):
+        pw, ph = int(hello["pixelsWide"]), int(hello["pixelsHigh"])
+        ui_scale = float(hello.get("scale", 2)) or 2
+        # Respect the receiver's decode ceiling.
+        mw, mh = hello.get("maxEncodeWide"), hello.get("maxEncodeHigh")
+        fit = 1.0
+        if mw and mh:
+            fit = min(1.0, float(mw) / pw, float(mh) / ph)
+        quality = QUALITY["sharp"] if self.transport == "USB" else self.quality
+        factor = min(quality, fit)
+        w, h = int(pw * factor) // 2 * 2, int(ph * factor) // 2 * 2
+        scale = round(ui_scale * factor * 4) / 4 or 1  # keeps logical size ≈ iPad points
+        self.panel = f"{pw}x{ph}"
+        self.video = f"{w}x{h}"
+        self.output.ensure(w, h, scale)
+        log(f"display {self.output.name}: {w}x{h} @ scale {scale:g} (panel {pw}x{ph}, ui {ui_scale:g}) "
+            f"over {self.transport}")
+        self.send_json(type="welcome", pv=PV, min=1)
+        self.send_json(type="streamConfig", codec="h264", width=w, height=h, framesPerSecond=FPS)
+        self.encoder.crf = CRF.get(self.transport, CRF["Wi-Fi"])
+        self._restart_encoder()
+        self.start_pointer()
+
+    # -- one connection ---------------------------------------------------
+
+    def serve(self, sock):
+        self.sock = sock
+        self.got_hello = False
+        self.last_rx = time.time()
+        self.last_scroll = 0.0
+        video = threading.Thread(target=self.video_loop, args=(sock,), daemon=True)
+        video.start()
+        buf = bytearray()
+        last_ping = last_check = last_usb = time.time()
+        while not self.stopping.is_set():
+            now = time.time()
+            if now - self.last_rx > DEAD_AFTER:
+                raise Closed("timeout")
+            if now - last_ping >= PING_INTERVAL:
+                self.send_json(type="ping")
+                last_ping = now
+                self.update_stats()
+            if (self.transport == "Wi-Fi" and self.transport_mode == "auto"
+                    and now - last_usb > USB_POLL):
+                last_usb = now
+                if usb_devices():
+                    raise Closed("cable")  # redial: dial() prefers USB
+            if self.last_scroll and now - self.last_scroll > SCROLL_IDLE:
+                self.ptr("S")
+                self.last_scroll = 0.0
+            if now - last_check > 5 and self.output.mode:
+                last_check = now
+                if not self.output.matches():  # e.g. Hyprland config reload dropped our rule
+                    log("reapplying output mode")
+                    self.output.ensure(*self.output.mode)
+                if self.encoder and not self.encoder.alive():
+                    log("encoder died, restarting")
+                    self._restart_encoder()
+            got = self.recv_exact(4, buf)
+            if got is None:
+                continue
+            n = struct.unpack(">I", bytes(buf[:4]))[0]
+            if n == 0 or n >= 1 << 20:
+                raise Closed("protocol error")
+            if self.recv_exact(4 + n, buf) is None:
+                continue
+            payload, buf = bytes(buf[4:4 + n]), buf[4 + n:]
+            try:
+                msg = json.loads(payload)
+            except ValueError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            self.handle(msg)
+
+    def handle(self, msg):
+        t = msg.get("type")
+        if t == "hello":
+            self.got_hello = True
+            log("hello", {k: msg.get(k) for k in ("device", "pixelsWide", "pixelsHigh", "scale", "pv")})
+            if msg.get("id"):
+                self.device_id = msg["id"]
+            self.configure(msg)
+            self.publish("streaming")
+        elif t == "ping":
+            self.send_json(type="pong", t=msg.get("t"), mt=now_ms())
+        elif t in ("touch", "pencil", "scroll"):
+            self.on_input(msg)
+        elif t == "kf":
+            log("kf requested by receiver")
+            self.request_keyframe()
+        elif t == "stats":
+            log("PHONE-STATS", json.dumps(msg))
+        elif t in ("sleeping", "closing"):
+            raise Closed(t)
+
+    def update_stats(self):
+        now = time.time()
+        dt = now - self.stats["t"]
+        if dt > 0:
+            self.fps = self.stats["frames"] / dt
+            self.mbps = self.stats["bytes"] * 8 / dt / 1e6
+        self.stats = {"frames": 0, "bytes": 0, "t": now}
+        self.publish("streaming")
+
+    # -- lifecycle --------------------------------------------------------
+
+    def teardown_connection(self):
+        sock, self.sock = self.sock, None
+        with self.frames_cv:
+            self.frames.clear()
+            self.frames_cv.notify_all()
+        if sock:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def teardown_display(self):
+        if self.encoder:
+            self.encoder.stop()
+        self.stop_pointer()
+        self.output.remove()
+        self.output.mode = None
+
+    def run(self):
+        self.encoder = Encoder(self.output.name, self.on_frame)
+        remove_stale_outputs()
+        deadline = time.time() + RECONNECT_GRACE
+        first = True
+        try:
+            while not self.stopping.is_set():
+                self.publish("connecting" if first else "reconnecting")
+                try:
+                    sock = self.dial()
+                except ConnectionError as e:
+                    if first or time.time() > deadline:
+                        raise
+                    log(e)
+                    self.stopping.wait(1)
+                    continue
+                first = False
+                try:
+                    self.serve(sock)
+                except (Closed, OSError, ValueError) as e:
+                    reason = getattr(e, "reason", str(e))
+                    log("connection ended:", reason)
+                    self.teardown_connection()
+                    if self.stopping.is_set() or reason == "closing":
+                        return "iPad app closed" if reason == "closing" else ""
+                    if reason == "cable":
+                        log("iPad plugged in — moving the session to USB")
+                        if self.encoder:
+                            self.encoder.stop()
+                        deadline = time.time() + RECONNECT_GRACE
+                        continue
+                    if not self.got_hello and reason != "sleeping":
+                        # Something accepted the dial but never spoke (app closed or
+                        # backgrounded): keep the old deadline so this gives up.
+                        if time.time() > deadline:
+                            return "iPad app not responding"
+                        self.stopping.wait(1)
+                        continue
+                    if reason == "sleeping":
+                        self.teardown_display()
+                        self.publish("sleeping", "iPad locked — reconnects on wake")
+                        deadline = time.time() + SLEEP_WAIT
+                    else:
+                        if self.encoder:
+                            self.encoder.stop()
+                        deadline = time.time() + RECONNECT_GRACE
+                    try:
+                        self.endpoints = resolve_target(self.target)[2] or self.endpoints
+                    except LookupError:
+                        pass
+                    self.stopping.wait(1)
+            return ""
+        finally:
+            self.teardown_connection()
+            self.teardown_display()
+
+
+# ------------------------------------------------------------------- commands
+
+def cmd_list(args):
+    devs = discover(args.timeout)
+    if args.json:
+        print(json.dumps(devs, indent=2))
+        return
+    if not devs:
+        print("No iPad found. Open OpenDisplay on the iPad (same Wi-Fi) and try again.")
+        return
+    for d in devs:
+        print(f"{d['name']:<30} {', '.join(d['addresses'][:2]):<32} id={d['id']} pv={d['pv']}")
+
+
+def cmd_status(args):
+    s = read_state()
+    starting = not s.get("pid") and time.time() - s.get("since", 0) < 10
+    if s.get("state") not in ("idle", "error") and not pid_alive(s.get("pid")) and not starting:
+        s = {"state": "idle"}
+    if args.json:
+        print(json.dumps(s))
+    else:
+        extra = f" → {s.get('device')} ({s.get('fps')} fps, {s.get('mbps')} Mb/s)" if s.get("device") else ""
+        print(s.get("state", "idle") + extra + (f" — {s['message']}" if s.get("message") else ""))
+
+
+def cmd_stop(args):
+    pid = running_pid()
+    if not pid:
+        print("not running")
+        remove_stale_outputs()
+        write_state(state="idle")
+        return
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not pid_alive(pid):
+            break
+        time.sleep(0.1)
+    print("stopped")
+
+
+def cmd_connect(args):
+    if running_pid():
+        cmd_stop(args)
+    if args.background:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        argv = [sys.executable, os.path.abspath(__file__), "connect"]
+        argv += [args.target] if args.target else []
+        argv += ["--quality", args.quality, "--position", args.position]
+        argv += ["--usb"] if args.usb else ["--wifi"] if args.wifi else []
+        write_state(state="connecting", device=args.target or "iPad", since=int(time.time()))
+        with open(LOG_FILE, "a") as logf:
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True)
+        print("connecting in background; log:", LOG_FILE)
+        return
+
+    transport = "usb" if args.usb else "wifi" if args.wifi else "auto"
+    try:
+        try:
+            if transport == "usb":
+                raise LookupError("USB only")
+            label, dev_id, endpoints = resolve_target(args.target)
+            target = args.target or dev_id or label
+        except LookupError:
+            # No Wi-Fi route; a cable is still fine.
+            if transport == "wifi" or not usb_devices():
+                raise
+            label, dev_id, endpoints, target = "iPad", None, [], args.target
+        session = Session(label, dev_id, endpoints, args.quality, args.position, target, transport)
+
+        def on_signal(*_):
+            session.stopping.set()
+            session.teardown_connection()
+        signal.signal(signal.SIGTERM, on_signal)
+        signal.signal(signal.SIGINT, on_signal)
+
+        write_state(state="connecting", pid=os.getpid(), device=label, since=int(time.time()))
+        message = session.run()
+        write_state(state="idle", message=message or "")
+    except (LookupError, ConnectionError, RuntimeError) as e:
+        log("error:", e)
+        write_state(state="error", message=str(e))
+        remove_stale_outputs()
+        sys.exit(1)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="omarchy-sidecar", description="Use an iPad as a second display (OpenDisplay protocol).")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pl = sub.add_parser("list", help="find iPads running OpenDisplay on the network")
+    pl.add_argument("--json", action="store_true")
+    pl.add_argument("--timeout", type=float, default=4.0)
+    pc = sub.add_parser("connect", help="extend the desktop onto an iPad")
+    pc.add_argument("target", nargs="?", help="device name or id from `list`, or HOST[:PORT]")
+    pc.add_argument("--quality", choices=QUALITY, default="balanced",
+                    help="sharp = native pixels (most CPU), balanced = 75%%, light = 50%%")
+    pc.add_argument("--position", choices=["right", "left", "above", "below"], default="right")
+    how = pc.add_mutually_exclusive_group()
+    how.add_argument("--usb", action="store_true", help="cable only (usbmuxd); default: cable if plugged in, else Wi-Fi")
+    how.add_argument("--wifi", action="store_true", help="Wi-Fi only, even with a cable attached")
+    pc.add_argument("--background", action="store_true", help="detach and log to " + str(LOG_FILE))
+    ps = sub.add_parser("status")
+    ps.add_argument("--json", action="store_true")
+    sub.add_parser("stop")
+    args = p.parse_args()
+    {"list": cmd_list, "connect": cmd_connect, "status": cmd_status, "stop": cmd_stop}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()
