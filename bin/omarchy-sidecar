@@ -965,7 +965,7 @@ def cmd_connect(args):
         argv += [args.target] if args.target else []
         argv += ["--quality", args.quality, "--position", args.position]
         argv += ["--usb"] if args.usb else ["--wifi"] if args.wifi else []
-        write_state(state="connecting", device=args.target or "iPad", since=int(time.time()))
+        write_state(state="connecting", device="iPad", since=int(time.time()))  # target may be a UUID/IP
         trim_log()
         with open(LOG_FILE, "a") as logf:
             subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True)

@@ -55,20 +55,48 @@ Panel {
 
   // "USB" | "Wi-Fi" | "" — what the live connection runs over.
   readonly property string transport: streaming ? String(status.transport || "") : ""
-  // "2388×1668 · 59 fps" while streaming (encoded size; older senders only report the panel).
-  readonly property string videoLine: {
-    if (!streaming) return ""
-    var size = String(status.video || status.panel || "").replace("x", "×")
-    return (size ? size + " · " : "") + Math.round(status.fps || 0) + " fps"
-  }
-
+  // Details under the connected device: "Streaming · 1194×834 · 40 fps · 0.3 Mbps".
   readonly property string statusLine: {
-    if (st === "streaming") return "Streaming · " + Number(status.mbps || 0).toFixed(1) + " Mbps"
+    if (st === "streaming") {
+      var size = String(status.video || status.panel || "").replace("x", "×")
+      return "Streaming · " + (size ? size + " · " : "") + Math.round(status.fps || 0) + " fps · "
+        + Number(status.mbps || 0).toFixed(1) + " Mbps"
+    }
     if (st === "connecting") return "Connecting…"
     if (st === "reconnecting") return "Reconnecting…"
-    if (st === "sleeping") return "iPad locked — resumes on wake"
-    if (st === "error") return "Error"
-    return "Not connected"
+    if (st === "sleeping") return "Locked — resumes on wake"
+    return ""
+  }
+
+  // A friendly name for the connected device. While connecting the state file can
+  // hold the raw target (a UUID or an IP), which must never be shown as a name.
+  readonly property string deviceName: {
+    var d = String(status.device || "")
+    var looksRaw = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(d) || /^[0-9.:\[\]]+$/.test(d)
+    if (d !== "" && !looksRaw) return d
+    for (var i = 0; i < devices.length; i++)
+      if (devices[i].id && devices[i].id === status.id) return String(devices[i].name)
+    return "iPad"
+  }
+
+  function isConnectedDevice(d) {
+    return active && ((d.id && d.id === status.id) || (!d.id && d.name === status.device))
+  }
+  readonly property var otherDevices: devices.filter(function(d) { return !root.isConnectedDevice(d) })
+
+  // The quirky line under the title; a new pick each time the panel opens.
+  property int quipSeed: 0
+  readonly property var quips: ({
+    idle: ["Your iPad, but make it a monitor", "Two screens are better than one", "Room for one more screen"],
+    connecting: ["Shaking hands with the iPad…"],
+    reconnecting: ["Finding the iPad again…"],
+    streaming: ["Now in two places at once", "Your desktop grew an iPad", "More room to think"],
+    sleeping: ["The iPad is napping"],
+    error: ["Something went sideways"]
+  })
+  readonly property string quip: {
+    var list = quips[st] || quips.idle
+    return list[quipSeed % list.length]
   }
 
   onStatusChanged: {
@@ -219,6 +247,7 @@ Panel {
   // ------------------------------------------------------------- bar button
 
   onOpenedChanged: {
+    if (opened) quipSeed = Math.floor(Math.random() * 1000)
     cursorActive = false
     cursorIndex = 0
     editingHost = false
@@ -261,8 +290,8 @@ Panel {
       function() { root.beginHostEntry() },
       function() { root.scan() }
     ]
-    for (var i = 0; i < devices.length; i++) {
-      (function(d) { list.push(function() { root.connectTo(d.id || d.name) }) })(devices[i])
+    for (var i = 0; i < otherDevices.length; i++) {
+      (function(d) { list.push(function() { root.connectTo(d.id || d.name) }) })(otherDevices[i])
     }
     return list
   }
@@ -305,7 +334,7 @@ Panel {
         anchors.top: parent.top
         spacing: Style.space(14)
 
-        // ---------- Hero: tablet glyph · device/status · on/off switch ----------
+        // ---------- Hero: icon · Sidecar + quip · on/off switch (as in Bluetooth) ----------
         Item {
           width: parent.width
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerSwitch.implicitHeight)
@@ -344,11 +373,11 @@ Panel {
             anchors.right: powerSwitch.left
             anchors.rightMargin: Style.space(12)
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(3)
+            spacing: Style.space(2)
 
             Text {
               textFormat: Text.PlainText
-              text: root.active && root.status.device ? String(root.status.device) : "iPad display"
+              text: "Sidecar"
               color: root.bar.foreground
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.title
@@ -357,76 +386,50 @@ Panel {
               width: parent.width
             }
 
-            Row {
-              width: parent.width
-              spacing: Style.space(6)
-
-              // Transport badge: which link the stream rides on.
-              Rectangle {
-                id: transportBadge
-                visible: root.transport !== ""
-                anchors.verticalCenter: parent.verticalCenter
-                width: badgeLabel.implicitWidth + Style.space(10)
-                height: badgeLabel.implicitHeight + Style.space(2)
-                radius: height / 2
-                color: "transparent"
-                border.width: 1
-                border.color: root.bar.foreground
-
-                Text {
-                  id: badgeLabel
-                  anchors.centerIn: parent
-                  textFormat: Text.PlainText
-                  text: (root.transport === "USB" ? root.glyphUsb : root.glyphWifi) + " " + root.transport.toUpperCase()
-                  color: root.bar.foreground
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  font.letterSpacing: 1.2
-                }
-              }
-
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
-                text: root.statusLine.toUpperCase()
-                color: Qt.darker(root.bar.foreground, 1.4)
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                font.letterSpacing: 1.2
-                elide: Text.ElideRight
-                width: parent.width - (transportBadge.visible ? transportBadge.width + parent.spacing : 0)
-              }
-            }
-
-            // Live resolution and frame rate, quiet third line.
             Text {
-              visible: root.videoLine !== ""
               textFormat: Text.PlainText
-              text: root.videoLine
+              text: root.quip.toUpperCase()
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
               elide: Text.ElideRight
-              width: parent.width
-            }
-
-            Text {
-              visible: root.st === "error" && !!root.status.message
-              textFormat: Text.PlainText
-              text: String(root.status.message || "")
-              color: root.bar.foreground
-              opacity: 0.7
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
               width: parent.width
             }
           }
         }
 
+        Text {
+          visible: root.st === "error" && !!root.status.message
+          textFormat: Text.PlainText
+          text: String(root.status.message || "")
+          color: root.bar.foreground
+          opacity: 0.7
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+          width: parent.width
+        }
+
         PanelSeparator { foreground: root.bar.foreground }
+
+        // ---------- Connected ----------
+        Column {
+          visible: root.active
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader {
+            text: "CONNECTED"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          ConnectedRow { width: parent.width }
+        }
+
+        PanelSeparator { visible: root.active; foreground: root.bar.foreground }
 
         // ---------- Quality ----------
         Column {
@@ -493,9 +496,10 @@ Panel {
           }
 
           Text {
-            visible: root.devices.length === 0 && !root.scanning
+            visible: root.otherDevices.length === 0 && !root.scanning
             textFormat: Text.PlainText
-            text: "None found. Open OpenDisplay on the iPad (same Wi-Fi), or connect by IP."
+            text: root.active ? "No other iPads found."
+                              : "None found. Open OpenDisplay on the iPad (same Wi-Fi), or connect by IP."
             color: root.bar.foreground
             opacity: 0.6
             font.family: root.bar.fontFamily
@@ -505,7 +509,7 @@ Panel {
           }
 
           Repeater {
-            model: root.devices
+            model: root.otherDevices
             DeviceRow {
               required property var modelData
               required property int index
@@ -547,6 +551,107 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               anchors.verticalCenter: parent.verticalCenter
             }
+          }
+        }
+      }
+    }
+  }
+
+  // The connected device, like Bluetooth's CONNECTED rows: name, then a badge
+  // for the link and the live stream details. Clicking it disconnects.
+  component ConnectedRow: CursorSurface {
+    id: crow
+    current: true
+    foreground: root.bar.foreground
+    implicitHeight: crowContent.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      id: crowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.disconnect()
+    }
+
+    PanelToolTip {
+      visible: crowMouse.containsMouse
+      text: "Disconnect"
+      fontFamily: root.bar.fontFamily
+    }
+
+    Item {
+      id: crowContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      implicitHeight: Math.max(crowIcon.implicitHeight, crowInfo.implicitHeight)
+
+      IPadIcon {
+        id: crowIcon
+        iconSize: Style.font.heading * 1.2
+        color: root.bar.foreground
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Column {
+        id: crowInfo
+        spacing: Style.space(3)
+        anchors.left: crowIcon.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          textFormat: Text.PlainText
+          text: root.deviceName
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+          width: parent.width
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          // Which link the stream rides on.
+          Rectangle {
+            id: transportBadge
+            visible: root.transport !== ""
+            anchors.verticalCenter: parent.verticalCenter
+            width: badgeLabel.implicitWidth + Style.space(10)
+            height: badgeLabel.implicitHeight + Style.space(2)
+            radius: height / 2
+            color: "transparent"
+            border.width: 1
+            border.color: root.bar.foreground
+
+            Text {
+              id: badgeLabel
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: (root.transport === "USB" ? root.glyphUsb : root.glyphWifi) + " " + root.transport.toUpperCase()
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+            }
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: root.statusLine
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            width: parent.width - (transportBadge.visible ? transportBadge.width + parent.spacing : 0)
           }
         }
       }

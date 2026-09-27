@@ -19,7 +19,7 @@ A bar widget creates a virtual monitor sized to your iPad and streams it to the 
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/LeoAba/leoaba-sidecar --enable
+omarchy plugin add https://github.com/LeoAba/omarchy-sidecar-leoaba --enable
 ~/.config/omarchy/plugins/io.github.leoaba.sidecar/setup
 ```
 
