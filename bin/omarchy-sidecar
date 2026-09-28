@@ -26,6 +26,7 @@ import ipaddress
 import json
 import os
 import plistlib
+import math
 import re
 import secrets
 import select
@@ -85,8 +86,18 @@ def trim_log():
         pass
 
 
+LOG_TRIM_EVERY = 256 * 1024  # bytes written between size checks
+_log_written = 0
+
+
 def log(*args):
-    print(time.strftime("%H:%M:%S"), *args, file=sys.stderr, flush=True)
+    global _log_written
+    line = " ".join([time.strftime("%H:%M:%S"), *map(str, args)])
+    print(line, file=sys.stderr, flush=True)
+    _log_written += len(line) + 1
+    if _log_written >= LOG_TRIM_EVERY:
+        _log_written = 0
+        trim_log()
 
 
 def now_ms():
@@ -162,6 +173,45 @@ def _avahi_unescape(s):
             out.append(s[i])
             i += 1
     return "".join(out)
+
+
+# Everything a receiver sends is untrusted: sizes, rates and numbers are bounded.
+PANEL_MIN, PANEL_MAX = 320, 8192
+UI_SCALE_MIN, UI_SCALE_MAX = 0.5, 4.0
+KF_MIN_INTERVAL = 1.0        # at most one encoder restart per second for keyframe requests
+RECONFIG_MIN_INTERVAL = 1.0  # at most one display rebuild per second for changed hellos
+STATS_LOG_INTERVAL = 5.0     # receiver stats logged at most this often ...
+STATS_LOG_MAX_CHARS = 500    # ... and at most this long
+
+
+def finite(v, lo, hi, default=None):
+    """v as a float within [lo, hi], or `default` if it is missing, non-numeric or non-finite."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return min(max(f, lo), hi) if math.isfinite(f) else default
+
+
+def valid_hello(msg):
+    """(pw, ph, ui_scale, fit) from a receiver hello, or None if it is not sane."""
+    try:
+        pw, ph = int(msg["pixelsWide"]), int(msg["pixelsHigh"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not (PANEL_MIN <= pw <= PANEL_MAX and PANEL_MIN <= ph <= PANEL_MAX):
+        return None
+    ui_scale = finite(msg.get("scale", 2), UI_SCALE_MIN, UI_SCALE_MAX)
+    if ui_scale is None:
+        return None
+    fit = 1.0
+    mw, mh = msg.get("maxEncodeWide"), msg.get("maxEncodeHigh")
+    if mw is not None or mh is not None:
+        mw, mh = finite(mw, PANEL_MIN, PANEL_MAX), finite(mh, PANEL_MIN, PANEL_MAX)
+        if mw is None or mh is None:
+            return None
+        fit = min(1.0, mw / pw, mh / ph)
+    return pw, ph, ui_scale, fit
 
 
 DISCOVERY_MAX_BYTES = 256 * 1024  # avahi-browse output kept; the rest is ignored
@@ -631,6 +681,7 @@ class Session:
         self.need_idr = True
         self.stopping = threading.Event()
         self.hello = None
+        self.last_kf = self.last_reconfig = self.last_stats_log = 0.0
         self.quality_changed = threading.Event()
         self.stats = {"frames": 0, "bytes": 0, "t": time.time()}
         self.fps = self.mbps = 0.0
@@ -775,7 +826,9 @@ class Session:
     def on_input(self, msg):
         t = msg.get("type")
         if t in ("touch", "pencil"):
-            x, y = float(msg.get("x", 0)), float(msg.get("y", 0))
+            x, y = finite(msg.get("x"), 0.0, 1.0), finite(msg.get("y"), 0.0, 1.0)
+            if x is None or y is None:
+                return
             phase = msg.get("phase")
             move = f"m {x:.5f} {y:.5f}"
             if phase in ("began", "down"):
@@ -789,20 +842,18 @@ class Session:
         elif t == "scroll":
             scale = self.output.mode[2] if self.output.mode else 1
             # Natural-scroll video pixels -> wayland axis (positive = scroll down).
-            self.ptr(f"s {-float(msg.get('dx', 0)) / scale:.2f} {-float(msg.get('dy', 0)) / scale:.2f}")
+            dx, dy = finite(msg.get("dx", 0), -5000, 5000, 0.0), finite(msg.get("dy", 0), -5000, 5000, 0.0)
+            self.ptr(f"s {-dx / scale:.2f} {-dy / scale:.2f}")
             self.last_scroll = time.time()
 
     # -- display ----------------------------------------------------------
 
     def configure(self, hello, welcome=True):
+        dims = valid_hello(hello)
+        if dims is None:
+            raise Closed("invalid hello")
         self.hello = hello
-        pw, ph = int(hello["pixelsWide"]), int(hello["pixelsHigh"])
-        ui_scale = float(hello.get("scale", 2)) or 2
-        # Respect the receiver's decode ceiling.
-        mw, mh = hello.get("maxEncodeWide"), hello.get("maxEncodeHigh")
-        fit = 1.0
-        if mw and mh:
-            fit = min(1.0, float(mw) / pw, float(mh) / ph)
+        pw, ph, ui_scale, fit = dims  # fit respects the receiver's decode ceiling
         # The output always renders at the panel's pixels (so the desktop layout
         # never changes); quality only sets the size the encoder scales down to.
         # Resizing a headless output live stalls Hyprland's screencopy of it.
@@ -901,12 +952,23 @@ class Session:
     def handle(self, msg):
         t = msg.get("type")
         if t == "hello":
+            dims = valid_hello(msg)
+            summary = {k: str(msg.get(k))[:40] for k in ("device", "pixelsWide", "pixelsHigh", "scale", "pv")}
+            if dims is None:
+                log("invalid hello", summary)
+                raise Closed("invalid hello")
             self.got_hello = True
-            log("hello", {k: msg.get(k) for k in ("device", "pixelsWide", "pixelsHigh", "scale", "pv")})
-            if msg.get("id"):
-                self.device_id = msg["id"]
-            if msg.get("device") and self.label == self.target:
-                self.label = msg["device"]  # dialled by address: name it what the iPad says it is
+            if self.hello is not None and dims == valid_hello(self.hello):
+                return  # same panel again: nothing to rebuild
+            now = time.time()
+            if now - self.last_reconfig < RECONFIG_MIN_INTERVAL:
+                return  # changed again within a second; the next hello will be applied
+            self.last_reconfig = now
+            log("hello", summary)  # only hellos that are applied are logged
+            if isinstance(msg.get("id"), str):
+                self.device_id = msg["id"][:64]
+            if isinstance(msg.get("device"), str) and self.label == self.target:
+                self.label = msg["device"][:32]  # dialled by address: name it what the iPad says it is
             self.configure(msg)
             self.publish("streaming")
         elif t == "ping":
@@ -914,10 +976,16 @@ class Session:
         elif t in ("touch", "pencil", "scroll"):
             self.on_input(msg)
         elif t == "kf":
-            log("kf requested by receiver")
-            self.request_keyframe()
+            now = time.time()
+            if now - self.last_kf >= KF_MIN_INTERVAL:  # extra requests are covered by this restart
+                self.last_kf = now
+                log("kf requested by receiver")
+                self.request_keyframe()
         elif t == "stats":
-            log("PHONE-STATS", json.dumps(msg))
+            now = time.time()
+            if now - self.last_stats_log >= STATS_LOG_INTERVAL:
+                self.last_stats_log = now
+                log("PHONE-STATS", json.dumps(msg)[:STATS_LOG_MAX_CHARS])
         elif t in ("sleeping", "closing"):
             raise Closed(t)
 
@@ -1010,6 +1078,8 @@ class Session:
                     self.teardown_connection()
                     if self.stopping.is_set() or reason == "closing":
                         return "iPad app closed" if reason == "closing" else ""
+                    if reason == "invalid hello":  # not a receiver we can drive; don't redial it
+                        return "receiver sent an invalid display description"
                     if reason == "cable":
                         log("iPad plugged in — moving the session to USB")
                         if self.encoder:
