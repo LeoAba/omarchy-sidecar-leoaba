@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.leoaba.sidecar",
   "name": "LeoAba Sidecar",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Leo Aba",
   "license": "MIT",
   "description": "iPad as a second display for M1/M2 MacBooks on Omarchy, which cannot drive an external monitor under Asahi. Wi-Fi or USB, touch input, via the free OpenDisplay iPad app.",
