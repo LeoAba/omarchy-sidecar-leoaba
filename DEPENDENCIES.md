@@ -1,6 +1,6 @@
 # Dependencies
 
-Everything LeoAba Sidecar uses, and the versions it was tested with on 2026-09-28: Omarchy 4.0.3rc4 on Arch Linux ARM (Asahi kernel 7.1.13), on a 13" M1 MacBook Pro (MacBookPro17,1).
+Everything Sidecar - leoaba uses, and the versions it was tested with on 2026-09-28: Omarchy 4.0.3rc4 on Arch Linux ARM (Asahi kernel 7.1.13), on a 13" M1 MacBook Pro (MacBookPro17,1).
 
 ## Runtime (required)
 

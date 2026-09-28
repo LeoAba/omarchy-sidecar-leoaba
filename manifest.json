@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "io.github.leoaba.sidecar",
-  "name": "LeoAba Sidecar",
+  "name": "Sidecar - leoaba",
   "version": "0.3.0",
   "author": "Leo Aba",
   "license": "MIT",
@@ -13,7 +13,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "LeoAba Sidecar",
+    "displayName": "Sidecar - leoaba",
     "description": "iPad as a second display: left-click for devices and quality, right-click to connect/disconnect.",
     "category": "Display",
     "allowMultiple": false,
