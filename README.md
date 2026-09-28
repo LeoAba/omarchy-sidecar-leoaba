@@ -13,8 +13,8 @@ A bar widget creates a virtual monitor sized to your iPad and streams it to the 
 - Omarchy (Hyprland with Lua config, Quickshell bar).
 - On the iPad: [OpenDisplay](https://github.com/peetzweg/opendisplay), free on [TestFlight](https://testflight.apple.com/join/3NYaY11c).
 - **Wi-Fi:** the iPad and the computer must be on the same network. Phone hotspots may block device-to-device traffic.
-- **USB (optional):** `usbmuxd` (`omarchy pkg add usbmuxd`). After installing it, replug the iPad and tap **Trust**.
-- Packages the setup script checks for, and installs with `omarchy pkg add` if any are missing: `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`. [DEPENDENCIES.md](DEPENDENCIES.md) lists every package it uses, with the versions it was tested on.
+- **USB-C (optional):** the `usbmuxd` package. After installing it, replug the iPad and tap **Trust**.
+- Packages the setup script checks for (all included with Omarchy; it reports any that are missing and installs nothing itself): `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`. [DEPENDENCIES.md](DEPENDENCIES.md) lists every package it uses, with the versions it was tested on.
 
 ## Install
 

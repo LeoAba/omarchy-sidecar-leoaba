@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # `omarchy plugin add` only clones files; this is the rest of the install.
 #   ./setup              check dependencies, build the touch helper, link the CLI
+#                        (it never installs packages; it reports what is missing)
 #   ./setup --uninstall  stop any session and undo the above
 set -euo pipefail
 
@@ -16,7 +17,7 @@ if [[ ${1:-} == --uninstall ]]; then
   exit 0
 fi
 
-# Everything is in Omarchy's base install except, occasionally, wf-recorder.
+# Everything ships with Omarchy; this only checks and reports.
 need=()
 command -v wf-recorder >/dev/null || need+=(wf-recorder)
 command -v avahi-browse >/dev/null || need+=(avahi)
@@ -26,8 +27,9 @@ command -v make >/dev/null || need+=(make)
 command -v pkg-config >/dev/null || need+=(pkgconf)
 command -v python3 >/dev/null || need+=(python)
 if ((${#need[@]})); then
-  echo "Installing: ${need[*]}"
-  omarchy pkg add "${need[@]}"
+  echo "Missing packages: ${need[*]}"
+  echo "Install them, then run ./setup again."
+  exit 1
 fi
 
 # Touch/pencil input: a tiny zwlr_virtual_pointer client, built in place.
@@ -42,4 +44,4 @@ fi
 echo "Sidecar - leoaba is ready."
 echo "  1. Install OpenDisplay on the iPad: https://testflight.apple.com/join/3NYaY11c"
 echo "  2. Click the tablet icon in the bar (or: omarchy-sidecar connect)."
-command -v usbmuxd >/dev/null || echo "  Optional, for USB: omarchy pkg add usbmuxd, then replug the iPad and tap Trust."
+command -v usbmuxd >/dev/null || echo "  Optional, for USB-C: install the usbmuxd package, then replug the iPad and tap Trust."

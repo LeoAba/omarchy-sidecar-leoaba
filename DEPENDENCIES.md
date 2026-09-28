@@ -36,4 +36,4 @@ Everything Sidecar - leoaba uses, and the versions it was tested with on 2026-09
 |---|---|
 | [OpenDisplay](https://github.com/peetzweg/opendisplay) | Free, via [TestFlight](https://testflight.apple.com/join/3NYaY11c). GPL-3.0, a separate project. Tested with protocol version 3 on an 11" iPad Pro (2388×1668). |
 
-`setup` checks for the required and build packages and installs any that are missing with `omarchy pkg add`.
+`setup` checks for the required and build packages and reports any that are missing. It never installs packages itself.
