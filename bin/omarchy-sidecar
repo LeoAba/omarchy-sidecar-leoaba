@@ -25,6 +25,7 @@ import ipaddress
 import json
 import os
 import plistlib
+import re
 import select
 import shutil
 import signal
@@ -180,8 +181,8 @@ def resolve_target(target):
         try:
             ipaddress.ip_address(host)
             direct = True
-        except ValueError:
-            direct = "." in host and " " not in host
+        except ValueError:  # a hostname like ipad.local, never a path or free text
+            direct = re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", host) is not None
         if direct:
             return target, None, [(host, int(port))]
     for d in discover():
@@ -769,6 +770,8 @@ class Session:
             log("hello", {k: msg.get(k) for k in ("device", "pixelsWide", "pixelsHigh", "scale", "pv")})
             if msg.get("id"):
                 self.device_id = msg["id"]
+            if msg.get("device") and self.label == self.target:
+                self.label = msg["device"]  # dialled by address: name it what the iPad says it is
             self.configure(msg)
             self.publish("streaming")
         elif t == "ping":

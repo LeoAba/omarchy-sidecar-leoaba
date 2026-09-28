@@ -155,6 +155,11 @@ Panel {
   function commitHostEntry() {
     var h = String(hostField.text || "").trim()
     if (h === "") return
+    // Only an IP address or hostname, optionally with :port — never a path.
+    if (!/^(\[[0-9A-Fa-f:.]+\]|[0-9A-Fa-f:.]+|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*)(:[0-9]+)?$/.test(h)) {
+      hostField.text = ""
+      return
+    }
     connectTo(h)
     cancelHostEntry()
   }
