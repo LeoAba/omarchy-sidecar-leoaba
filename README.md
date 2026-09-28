@@ -83,6 +83,10 @@ omarchy plugin remove io.github.leoaba.sidecar
 
 `tools/fake-receiver.py` stands in for the iPad app, `tools/fake-usbmuxd.py` for a USB-connected iPad, and `tools/stall-probe.py` watches for desktop stalls. `SIDECAR_DUMP=file` saves the exact stream sent; `SIDECAR_X264=":key=value"` appends x264 options.
 
+## About
+
+Vibecoded with AI: designed, tested and debugged on real hardware together with AI coding assistants.
+
 ## Thank you
 
 I'm so happy and grateful to be part of Omarchy, and I really appreciate all the work that's been put into it. Thank you to everyone behind Omarchy, and to Hyprland, Quickshell, Asahi Linux and OpenDisplay, which this plugin stands on. My M1 couldn't use an external monitor, and now it has a second screen again :)

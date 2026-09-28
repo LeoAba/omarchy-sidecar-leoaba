@@ -262,7 +262,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // Same treatment as the AirPods widget: solid gray when idle, not see-through.
+    // Solid gray when idle, full colour while connected.
     iconComponent: Component {
       Item {
         IPadIcon {
@@ -335,7 +335,7 @@ Panel {
         anchors.top: parent.top
         spacing: Style.space(14)
 
-        // ---------- Hero: icon · Sidecar + quip · on/off switch (as in Bluetooth) ----------
+        // ---------- Header: icon · title + status line · on/off switch ----------
         Item {
           width: parent.width
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerSwitch.implicitHeight)
@@ -348,7 +348,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
           }
 
-          // Same on/off switch as the built-in panels; it is cursor slot 0.
+          // Connection switch; keyboard cursor slot 0.
           ToggleSwitch {
             id: powerSwitch
             checked: root.active
@@ -578,8 +578,8 @@ Panel {
     }
   }
 
-  // The connected device, like Bluetooth's CONNECTED rows: name, then a badge
-  // for the link and the live stream details. Clicking it disconnects.
+  // The connected device: name, then a badge for the link and the live stream
+  // details. Clicking it disconnects.
   component ConnectedRow: CursorSurface {
     id: crow
     current: true
@@ -679,7 +679,7 @@ Panel {
     }
   }
 
-  // Borderless, two-line device row in the style of the Bluetooth panel.
+  // Borderless, two-line row for an iPad found on the network.
   component DeviceRow: CursorSurface {
     id: row
     required property var dev

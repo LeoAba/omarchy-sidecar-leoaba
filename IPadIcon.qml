@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Shapes
 
 // A classic iPad standing upright: rounded body, screen cut out, home button.
-// Drawn as one even-odd path, the same way the AirPods plugin draws its marks.
+// Drawn as a single even-odd path so it scales cleanly at any size.
 Item {
   id: root
 
