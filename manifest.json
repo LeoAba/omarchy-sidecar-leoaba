@@ -5,7 +5,7 @@
   "version": "0.3.0",
   "author": "Leo Aba",
   "license": "MIT",
-  "description": "iPad as a second display for M1/M2 MacBooks on Omarchy, which cannot drive an external monitor under Asahi. Wi-Fi or USB, touch input, via the free OpenDisplay iPad app.",
+  "description": "iPad as a second display for M1/M2 MacBooks on Omarchy, which cannot drive an external monitor under Asahi. Wi-Fi or USB-C, touch input, via the free OpenDisplay iPad app.",
   "kinds": [
     "bar-widget"
   ],
