@@ -13,6 +13,7 @@ touch, pencil and scroll events into pointer input on that output.
                           [--position right|left|above|below] [--background]
   omarchy-sidecar quality sharp|balanced|light   (live, while connected)
   omarchy-sidecar stop
+  omarchy-sidecar check                          (is setup complete?)
   omarchy-sidecar status [--json]
 
 TARGET is a device name or id from `list`, or HOST[:PORT]. Without a
@@ -948,6 +949,17 @@ def cmd_stop(args):
     print("stopped")
 
 
+def cmd_check(args):
+    """Exit 0 if setup has been run and everything needed is present."""
+    missing = [t for t in ("wf-recorder", "avahi-browse") if not shutil.which(t)]
+    if not (POINTER_BIN.exists() and os.access(POINTER_BIN, os.X_OK)):
+        missing.append("touch helper (run setup)")
+    if missing:
+        print("setup needed:", ", ".join(missing))
+        sys.exit(1)
+    print("ready")
+
+
 def cmd_quality(args):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     QUALITY_REQUEST.write_text(args.level + "\n")
@@ -1024,11 +1036,12 @@ def main():
     ps = sub.add_parser("status")
     ps.add_argument("--json", action="store_true")
     sub.add_parser("stop")
+    sub.add_parser("check", help="exit 0 if setup is complete, else list what is missing")
     pq = sub.add_parser("quality", help="change quality of the running session, live")
     pq.add_argument("level", choices=QUALITY)
     args = p.parse_args()
     {"list": cmd_list, "connect": cmd_connect, "status": cmd_status, "stop": cmd_stop,
-     "quality": cmd_quality}[args.cmd](args)
+     "quality": cmd_quality, "check": cmd_check}[args.cmd](args)
 
 
 if __name__ == "__main__":

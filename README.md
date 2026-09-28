@@ -1,10 +1,10 @@
-# Sidecar - leoaba
+# Sidecar for M1-M2 - leoaba
 
 Use an iPad as a second display for [Omarchy](https://omarchy.org), the way macOS Sidecar does. It syncs over **Wi-Fi or a USB-C cable**, and touch works as a mouse.
 
 **Made for Apple Silicon M1 and M2 MacBooks running Omarchy on Asahi Linux.** Their USB-C ports can't drive an external display under Linux yet (no DisplayPort alt mode), so an iPad is the only second screen you can get. Nothing in the code is M1-specific, and it will probably run on other Omarchy machines, but **it has only been tested on a 13" M1 MacBook Pro (2020)** with an 11" iPad Pro. Reports from M2 owners are very welcome.
 
-![Sidecar - leoaba widget](preview.png)
+![Sidecar for M1-M2 - leoaba widget](preview.png)
 
 A bar widget creates a virtual monitor sized to your iPad and streams it to the free **OpenDisplay** app on the iPad. Taps, drags, Apple Pencil and two-finger scroll come back as pointer input. Drag windows onto it, or move a workspace there, like any other monitor.
 
@@ -13,17 +13,16 @@ A bar widget creates a virtual monitor sized to your iPad and streams it to the 
 - Omarchy (Hyprland with Lua config, Quickshell bar).
 - On the iPad: [OpenDisplay](https://github.com/peetzweg/opendisplay), free on [TestFlight](https://testflight.apple.com/join/3NYaY11c).
 - **Wi-Fi:** the iPad and the computer must be on the same network. Phone hotspots may block device-to-device traffic.
-- **USB-C (optional):** the `usbmuxd` package. After installing it, replug the iPad and tap **Trust**.
-- Packages the setup script checks for (all included with Omarchy; it reports any that are missing and installs nothing itself): `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`. [DEPENDENCIES.md](DEPENDENCIES.md) lists every package it uses, with the versions it was tested on.
+- **USB-C:** works out of the box. The first time you plug the iPad in, tap **Trust** on it.
+- Packages: setup installs whatever is missing (it asks for your password once): `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`. [DEPENDENCIES.md](DEPENDENCIES.md) lists every package it uses, with the versions it was tested on.
 
 ## Install
 
 ```sh
 omarchy plugin add https://github.com/LeoAba/omarchy-sidecar-leoaba --enable
-~/.config/omarchy/plugins/io.github.leoaba.sidecar/setup
 ```
 
-`setup` builds the small touch-input helper (`pointer/`) and links the CLI to `~/.local/bin/omarchy-sidecar`. Nothing else outside the plugin folder is changed.
+Then click the tablet icon in the bar once. A terminal opens and finishes the setup: it installs the packages Sidecar needs, builds the small touch-input helper (`pointer/`) and links the CLI to `~/.local/bin/omarchy-sidecar` (only if that path is free). After that the widget is ready. You can also run `~/.config/omarchy/plugins/io.github.leoaba.sidecar/setup` yourself.
 
 ## Use
 

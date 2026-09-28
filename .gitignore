@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-# pointer helper build products (install.sh builds out of tree)
+# pointer helper build products (built in place by ./setup)
 pointer/sidecar-pointer
 pointer/*-protocol.c
 pointer/*-client-protocol.h

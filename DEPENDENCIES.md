@@ -1,6 +1,6 @@
 # Dependencies
 
-Everything Sidecar - leoaba uses, and the versions it was tested with on 2026-09-28: Omarchy 4.0.3rc4 on Arch Linux ARM (Asahi kernel 7.1.13), on a 13" M1 MacBook Pro (MacBookPro17,1).
+Everything Sidecar for M1-M2 - leoaba uses, and the versions it was tested with on 2026-09-28: Omarchy 4.0.3rc4 on Arch Linux ARM (Asahi kernel 7.1.13), on a 13" M1 MacBook Pro (MacBookPro17,1).
 
 ## Runtime (required)
 
@@ -14,6 +14,7 @@ Everything Sidecar - leoaba uses, and the versions it was tested with on 2026-09
 | avahi | 0.9rc5-1 | Finds the iPad on the network (`avahi-browse`, Bonjour `_opensidecar._tcp`) |
 | python | 3.14.7-1 | The sender (`bin/omarchy-sidecar`), standard library only |
 | wayland | 1.26.0-1 | `wayland-client` and `wayland-scanner`, to build the touch helper |
+| usbmuxd | 1.1.1-4 | USB-C connection to the iPad (tap **Trust** on the iPad the first time) |
 
 ## Build (the touch helper, built once by `setup`)
 
@@ -23,17 +24,10 @@ Everything Sidecar - leoaba uses, and the versions it was tested with on 2026-09
 | make | 4.4.1-3 |
 | pkgconf | 3.0.7-1 |
 
-## Optional
-
-| Package | Tested version | Used for |
-|---|---|---|
-| usbmuxd | 1.1.1-4 | USB connection to the iPad. Install, replug the iPad, tap **Trust** |
-| jq, rsync | 1.8.2, 3.5.1 | Only for the developer script `install.sh` |
-
 ## On the iPad
 
 | App | Notes |
 |---|---|
 | [OpenDisplay](https://github.com/peetzweg/opendisplay) | Free, via [TestFlight](https://testflight.apple.com/join/3NYaY11c). GPL-3.0, a separate project. Tested with protocol version 3 on an 11" iPad Pro (2388×1668). |
 
-`setup` checks for the required and build packages and reports any that are missing. It never installs packages itself.
+`setup` (run automatically by the widget on first use) installs any of these that are missing, including `usbmuxd` for USB-C.

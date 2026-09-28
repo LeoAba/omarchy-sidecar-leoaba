@@ -1,47 +1,63 @@
 #!/usr/bin/env bash
-# `omarchy plugin add` only clones files; this is the rest of the install.
-#   ./setup              check dependencies, build the touch helper, link the CLI
-#                        (it never installs packages; it reports what is missing)
-#   ./setup --uninstall  stop any session and undo the above
+# Finishes the install after `omarchy plugin add` (which only clones files).
+# The bar widget runs this in a terminal on first use; it can also be run by hand.
+#   ./setup              install missing packages, build the touch helper, link the CLI
+#   ./setup --uninstall  stop any session and remove what setup created
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
+cli="$root/bin/omarchy-sidecar"
 link="$HOME/.local/bin/omarchy-sidecar"
+name="Sidecar for M1-M2 - leoaba"
+
+# True only if $link is a symlink to this plugin's CLI.
+link_is_ours() {
+  [[ -L $link && $(readlink -f "$link" 2>/dev/null) == "$(readlink -f "$cli")" ]]
+}
 
 if [[ ${1:-} == --uninstall ]]; then
-  "$root/bin/omarchy-sidecar" stop 2>/dev/null || true
-  [[ -L $link && $(readlink "$link") == "$root/bin/omarchy-sidecar" ]] && rm -f "$link"
+  "$cli" stop 2>/dev/null || true
+  if link_is_ours; then rm -f "$link"; fi
   make -s -C "$root/pointer" clean
-  echo "Sidecar - leoaba: session stopped, CLI link and build files removed."
+  echo "$name: session stopped; the CLI link (if it was ours) and build files removed."
   echo "Remove the plugin itself with: omarchy plugin remove io.github.leoaba.sidecar"
   exit 0
 fi
 
-# Everything ships with Omarchy; this only checks and reports.
+# Packages: capture and encoding, iPad discovery, USB-C, and the touch helper build.
 need=()
 command -v wf-recorder >/dev/null || need+=(wf-recorder)
 command -v avahi-browse >/dev/null || need+=(avahi)
+command -v usbmuxd >/dev/null || [[ -x /usr/bin/usbmuxd ]] || need+=(usbmuxd)
 command -v wayland-scanner >/dev/null || need+=(wayland)
 command -v cc >/dev/null || need+=(gcc)
 command -v make >/dev/null || need+=(make)
 command -v pkg-config >/dev/null || need+=(pkgconf)
 command -v python3 >/dev/null || need+=(python)
 if ((${#need[@]})); then
-  echo "Missing packages: ${need[*]}"
-  echo "Install them, then run ./setup again."
-  exit 1
+  echo "Installing: ${need[*]}"
+  omarchy pkg add "${need[@]}"
 fi
 
-# Touch/pencil input: a tiny zwlr_virtual_pointer client, built in place.
+# usbmuxd starts when an iPad is plugged in; if one already is, start it now.
+if grep -qs -E '^(iPad|iPhone)' /sys/bus/usb/devices/*/product && ! systemctl is-active -q usbmuxd; then
+  sudo systemctl start usbmuxd || true
+fi
+
+# Touch/pencil input: a small zwlr_virtual_pointer client, built in place.
 make -s -C "$root/pointer"
 
-# Put the CLI on PATH (only if nothing else owns that name).
+# Put the CLI on PATH, but never take over a path that belongs to something else.
 mkdir -p "$(dirname "$link")"
-if [[ ! -e $link || -L $link ]]; then
-  ln -sfn "$root/bin/omarchy-sidecar" "$link"
+if link_is_ours; then
+  :
+elif [[ -e $link || -L $link ]]; then
+  echo "Note: $link already exists and is not ours; left untouched."
+  echo "      The bar widget works regardless; the CLI is at $cli"
+else
+  ln -s "$cli" "$link"
 fi
 
-echo "Sidecar - leoaba is ready."
+echo "$name is ready."
 echo "  1. Install OpenDisplay on the iPad: https://testflight.apple.com/join/3NYaY11c"
-echo "  2. Click the tablet icon in the bar (or: omarchy-sidecar connect)."
-command -v usbmuxd >/dev/null || echo "  Optional, for USB-C: install the usbmuxd package, then replug the iPad and tap Trust."
+echo "  2. Click the tablet icon in the bar. With a USB-C cable, tap Trust on the iPad the first time."

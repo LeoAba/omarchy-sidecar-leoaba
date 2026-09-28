@@ -16,6 +16,11 @@ Panel {
 
   // The sender ships inside this plugin folder (bin/omarchy-sidecar).
   readonly property string authorUrl: "https://linktr.ee/leoaba"
+  // First use: `omarchy plugin add` only clones, so the widget runs ./setup
+  // (packages, touch helper) in a terminal the first time it is used.
+  readonly property string setupScript: decodeURIComponent(String(Qt.resolvedUrl("setup")).replace(/^file:\/\//, ""))
+  property bool needsSetup: false
+  property bool setupRunning: false
   readonly property string cli: decodeURIComponent(String(Qt.resolvedUrl("bin/omarchy-sidecar")).replace(/^file:\/\//, ""))
   readonly property bool scanOnOpen: setting("scanOnOpen", true) === true
 
@@ -96,6 +101,7 @@ Panel {
     error: ["Something went sideways"]
   })
   readonly property string quip: {
+    if (needsSetup) return setupRunning ? "Setting things up…" : "One click to finish setup"
     var list = quips[st] || quips.idle
     return list[quipSeed % list.length]
   }
@@ -107,7 +113,13 @@ Panel {
 
   // ---------------------------------------------------------------- controls
 
+  function runSetup() {
+    setupRunning = true
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", setupScript])
+  }
+
   function connectTo(target) {
+    if (needsSetup) { runSetup(); return }
     var t = String(target || "")
     lastTarget = t
     savePrefs()
@@ -222,6 +234,24 @@ Panel {
   }
 
   Process {
+    id: checkProcess
+    command: [root.cli, "check"]
+    onExited: function(code) {
+      root.needsSetup = code !== 0
+      if (!root.needsSetup) root.setupRunning = false
+    }
+  }
+  Component.onCompleted: checkProcess.running = true
+
+  // While setup runs in its terminal, notice when it has finished.
+  Timer {
+    interval: 3000
+    repeat: true
+    running: root.needsSetup && root.setupRunning
+    onTriggered: checkProcess.running = true
+  }
+
+  Process {
     id: listProcess
     command: [root.cli, "list", "--json", "--timeout", "3"]
     stdout: StdioCollector {
@@ -253,7 +283,7 @@ Panel {
   // ------------------------------------------------------------- bar button
 
   onOpenedChanged: {
-    if (opened) quipSeed = Math.floor(Math.random() * 1000)
+    if (opened) { quipSeed = Math.floor(Math.random() * 1000); checkProcess.running = true }
     cursorActive = false
     cursorIndex = 0
     editingHost = false
@@ -279,7 +309,8 @@ Panel {
     }
     tooltipText: ""
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.toggleConnection()
+      if (root.needsSetup) root.runSetup()
+      else if (b === Qt.RightButton) root.toggleConnection()
       else root.toggle()
     }
   }
