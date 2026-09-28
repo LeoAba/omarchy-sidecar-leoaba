@@ -27,6 +27,7 @@ import json
 import os
 import plistlib
 import re
+import secrets
 import select
 import shutil
 import signal
@@ -309,28 +310,45 @@ def other_senders():
     return pids
 
 
-def recorded_output():
+def output_record():
+    """{"name", "width", "height", "scale"} of the output this install created, or None."""
     try:
-        return OUTPUT_RECORD.read_text().strip() or None
-    except OSError:
+        rec = json.loads(OUTPUT_RECORD.read_text())
+        return rec if isinstance(rec, dict) and rec.get("name") else None
+    except (OSError, ValueError):
         return None
+
+
+def recorded_output():
+    rec = output_record()
+    return rec["name"] if rec else None
+
+
+def matches_record(m, rec):
+    """An output is ours only if both its name and the configuration we gave it
+    match the record; a same-named output made by anything else won't."""
+    return (m["name"] == rec["name"] and m["width"] == rec.get("width")
+            and m["height"] == rec.get("height") and abs(m["scale"] - rec.get("scale", -1)) < 0.01)
 
 
 def remove_stale_outputs():
     """Remove the output a crashed session of *this install* left behind: only
     the exact name it recorded, never another display, and never while any
     sender is running (it may be that session's live display)."""
-    name = recorded_output()
-    if not name or other_senders():
+    rec = output_record()
+    if not rec or other_senders():
         return
-    if any(m["name"] == name for m in monitors()):
-        HeadlessOutput(name, "right").remove()
-    else:
+    if any(matches_record(m, rec) for m in monitors()):
+        HeadlessOutput(OUTPUT_PREFIX, "right", name=rec["name"]).remove()
+    else:  # gone, or replaced by something that isn't ours: forget it, touch nothing
         OUTPUT_RECORD.unlink(missing_ok=True)
 
 
 class HeadlessOutput:
-    def __init__(self, name, position):
+    def __init__(self, base, position, name=None):
+        # Each output this install creates gets a random suffix (SIDECAR-iPad-3f9a1c),
+        # so no other app can end up with a display we would mistake for ours.
+        self.base = base
         self.name = name
         self.position = position
         self.mode = None
@@ -338,18 +356,34 @@ class HeadlessOutput:
     def ensure(self, width, height, scale):
         names = [m["name"] for m in monitors()]
         before = cursor_pos()
-        if self.name not in names:
-            hyprctl("output", "create", "headless", self.name)
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            OUTPUT_RECORD.write_text(self.name + "\n")
-        elif recorded_output() != self.name:
-            raise RuntimeError(f"a display named {self.name} already exists and was not created by "
-                               "Sidecar; not taking it over")
+        if not (self.name and self.name in names and recorded_output() == self.name):
+            # Ours is gone (or never existed): create a fresh, uniquely named output.
+            # An existing output is never reused unless this session created it.
+            name = f"{self.base}-{secrets.token_hex(6)}"
+            while name in names:
+                name = f"{self.base}-{secrets.token_hex(6)}"
+            hyprctl("output", "create", "headless", name)
+            self.name = name
         self.mode = (width, height, scale)
         self.apply()
+        self.record()
         # Hyprland warps the pointer when an output appears; put it back.
         if before and cursor_pos() != before:
             hyprctl("dispatch", f"hl.dsp.cursor.move({{ x = {before[0]}, y = {before[1]} }})", check=False)
+
+    def record(self):
+        """Remember this output's name and actual configuration as ours, once
+        Hyprland reports the mode we asked for (applying it is asynchronous)."""
+        m = None
+        for _ in range(20):
+            m = next((m for m in monitors() if m["name"] == self.name), None)
+            if m and (m["width"], m["height"]) == self.mode[:2]:
+                break
+            time.sleep(0.05)
+        if m and (m["width"], m["height"]) == self.mode[:2]:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            OUTPUT_RECORD.write_text(json.dumps({"name": m["name"], "width": m["width"],
+                                                 "height": m["height"], "scale": m["scale"]}) + "\n")
 
     def apply(self):
         w, h, scale = self.mode
@@ -358,6 +392,8 @@ class HeadlessOutput:
         hyprctl("eval", lua)
 
     def matches(self):
+        if not self.name:
+            return False
         for m in monitors():
             if m["name"] == self.name:
                 # Hyprland may nudge the scale to one that divides the mode evenly.
@@ -400,6 +436,8 @@ class HeadlessOutput:
     def remove(self):
         # Hyprland drops the pointer into a corner whenever an output goes away,
         # even one the pointer isn't on, so put it back afterwards.
+        if not self.name:
+            return None
         target = self.cursor_target()
         hyprctl("output", "remove", self.name, check=False)
         if recorded_output() == self.name:
@@ -755,6 +793,7 @@ class Session:
             self.output.mode = None
         if self.output.mode != (ow, oh, scale):
             self.output.ensure(ow, oh, scale)
+        self.encoder.output = self.output.name  # the name is only known once created
         self.encoder.size = (w, h) if (w, h) != (ow, oh) else None
         log(f"display {self.output.name}: {ow}x{oh} @ scale {scale:g}, encoding {w}x{h} "
             f"({self.quality_name}; panel {pw}x{ph}, ui {ui_scale:g}) over {self.transport}")
@@ -803,7 +842,13 @@ class Session:
                 try:
                     if not self.output.matches():  # e.g. a config reload dropped our rule
                         log("reapplying output mode")
+                        old = self.output.name
                         self.output.ensure(*self.output.mode)
+                        if self.output.name != old:  # recreated under a new name
+                            log("display recreated as", self.output.name)
+                            self.encoder.output = self.output.name
+                            self._restart_encoder()
+                            self.start_pointer()
                     if self.encoder and not self.encoder.alive():
                         log("encoder died, restarting")
                         self._restart_encoder()
