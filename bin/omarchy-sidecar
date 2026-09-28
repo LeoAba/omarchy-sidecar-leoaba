@@ -271,7 +271,26 @@ def cursor_pos():
         return None
 
 
+def other_senders():
+    """PIDs of other running `omarchy-sidecar connect` processes."""
+    pids = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit() or int(d.name) == os.getpid():
+            continue
+        try:
+            args = (d / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if any(a.endswith(b"omarchy-sidecar") for a in args) and b"connect" in args:
+            pids.append(int(d.name))
+    return pids
+
+
 def remove_stale_outputs():
+    """Remove SIDECAR-* outputs left by a crashed session, but never while any
+    sender is running: the output may be that session's live display."""
+    if other_senders():
+        return
     for m in monitors():
         if m["name"].startswith(OUTPUT_PREFIX):
             hyprctl("output", "remove", m["name"], check=False)
@@ -741,12 +760,15 @@ class Session:
                 trim_log()
             if now - last_check > 5 and self.output.mode:
                 last_check = now
-                if not self.output.matches():  # e.g. Hyprland config reload dropped our rule
-                    log("reapplying output mode")
-                    self.output.ensure(*self.output.mode)
-                if self.encoder and not self.encoder.alive():
-                    log("encoder died, restarting")
-                    self._restart_encoder()
+                try:
+                    if not self.output.matches():  # e.g. a config reload dropped our rule
+                        log("reapplying output mode")
+                        self.output.ensure(*self.output.mode)
+                    if self.encoder and not self.encoder.alive():
+                        log("encoder died, restarting")
+                        self._restart_encoder()
+                except RuntimeError as e:  # Hyprland busy; try again next check
+                    log("check deferred:", e)
             got = self.recv_exact(4, buf)
             if got is None:
                 continue
