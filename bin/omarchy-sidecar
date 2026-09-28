@@ -47,6 +47,7 @@ STATE_FILE = STATE_DIR / "sidecar.json"
 LOG_FILE = STATE_DIR / "sidecar.log"
 LOG_MAX = 2 << 20   # trim sidecar.log past 2 MB ...
 LOG_KEEP = 1 << 20  # ... down to its newest 1 MB
+OUTPUT_RECORD = STATE_DIR / "sidecar-output"  # name of the output this install created
 QUALITY_REQUEST = STATE_DIR / "sidecar-quality"  # `quality` writes it, then SIGUSR1s the sender
 # The touch helper is built by ../setup next to its source (pointer/).
 POINTER_BIN = Path(os.environ.get("SIDECAR_POINTER",
@@ -115,10 +116,32 @@ def pid_alive(pid):
         return False
 
 
+def proc_start(pid):
+    """Kernel start time of a process (clock ticks since boot), or None."""
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text()
+        return int(stat.rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
+def is_our_sender(pid, start):
+    """True only if `pid` is still the sender that wrote the state file: same
+    start time (so a reused PID doesn't match) and an omarchy-sidecar connect
+    command line."""
+    if not pid or start is None or proc_start(pid) != start:
+        return False
+    try:
+        args = Path(f"/proc/{int(pid)}/cmdline").read_bytes().split(b"\0")
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(a.endswith(b"omarchy-sidecar") for a in args) and b"connect" in args
+
+
 def running_pid():
     s = read_state()
     pid = s.get("pid")
-    if s.get("state") not in (None, "idle", "error") and pid and pid_alive(pid):
+    if s.get("state") not in (None, "idle", "error") and is_our_sender(pid, s.get("pid_start")):
         return int(pid)
     return None
 
@@ -286,14 +309,24 @@ def other_senders():
     return pids
 
 
+def recorded_output():
+    try:
+        return OUTPUT_RECORD.read_text().strip() or None
+    except OSError:
+        return None
+
+
 def remove_stale_outputs():
-    """Remove SIDECAR-* outputs left by a crashed session, but never while any
-    sender is running: the output may be that session's live display."""
-    if other_senders():
+    """Remove the output a crashed session of *this install* left behind: only
+    the exact name it recorded, never another display, and never while any
+    sender is running (it may be that session's live display)."""
+    name = recorded_output()
+    if not name or other_senders():
         return
-    for m in monitors():
-        if m["name"].startswith(OUTPUT_PREFIX):
-            hyprctl("output", "remove", m["name"], check=False)
+    if any(m["name"] == name for m in monitors()):
+        HeadlessOutput(name, "right").remove()
+    else:
+        OUTPUT_RECORD.unlink(missing_ok=True)
 
 
 class HeadlessOutput:
@@ -307,6 +340,11 @@ class HeadlessOutput:
         before = cursor_pos()
         if self.name not in names:
             hyprctl("output", "create", "headless", self.name)
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            OUTPUT_RECORD.write_text(self.name + "\n")
+        elif recorded_output() != self.name:
+            raise RuntimeError(f"a display named {self.name} already exists and was not created by "
+                               "Sidecar; not taking it over")
         self.mode = (width, height, scale)
         self.apply()
         # Hyprland warps the pointer when an output appears; put it back.
@@ -364,6 +402,8 @@ class HeadlessOutput:
         # even one the pointer isn't on, so put it back afterwards.
         target = self.cursor_target()
         hyprctl("output", "remove", self.name, check=False)
+        if recorded_output() == self.name:
+            OUTPUT_RECORD.unlink(missing_ok=True)
         if target:
             hyprctl("dispatch", f"hl.dsp.cursor.move({{ x = {target[0]}, y = {target[1]} }})", check=False)
         return target
@@ -536,7 +576,7 @@ class Session:
     # -- state ------------------------------------------------------------
 
     def publish(self, state, message=""):
-        write_state(state=state, pid=os.getpid(), device=self.label, id=self.device_id,
+        write_state(state=state, pid=os.getpid(), pid_start=proc_start(os.getpid()), device=self.label, id=self.device_id,
                     target=self.target, output=self.output.name, quality=self.quality_name,
                     panel=self.panel, video=self.video, fps=round(self.fps, 1), mbps=round(self.mbps, 2),
                     transport=self.transport, since=self.since, message=message)
@@ -947,7 +987,8 @@ def cmd_list(args):
 def cmd_status(args):
     s = read_state()
     starting = not s.get("pid") and time.time() - s.get("since", 0) < 10
-    if s.get("state") not in ("idle", "error") and not pid_alive(s.get("pid")) and not starting:
+    if s.get("state") not in ("idle", "error") and not is_our_sender(s.get("pid"), s.get("pid_start")) \
+            and not starting:
         s = {"state": "idle"}
     if args.json:
         print(json.dumps(s))
@@ -1030,7 +1071,7 @@ def cmd_connect(args):
         signal.signal(signal.SIGINT, on_signal)
         signal.signal(signal.SIGUSR1, lambda *_: session.quality_changed.set())
 
-        write_state(state="connecting", pid=os.getpid(), device=label, since=int(time.time()))
+        write_state(state="connecting", pid=os.getpid(), pid_start=proc_start(os.getpid()), device=label, since=int(time.time()))
         message = session.run()
         write_state(state="idle", message=message or "")
     except (LookupError, ConnectionError, RuntimeError) as e:
