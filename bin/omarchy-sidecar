@@ -164,32 +164,59 @@ def _avahi_unescape(s):
     return "".join(out)
 
 
+DISCOVERY_MAX_BYTES = 256 * 1024  # avahi-browse output kept; the rest is ignored
+DISCOVERY_MAX_DEVICES = 16
+DISCOVERY_MAX_ADDRESSES = 4
+
+
 def discover(timeout=4.0):
     """Resolve _opensidecar._tcp services with avahi-browse. Returns a list of
-    {name, id, pv, host, port, addresses} with IPv4 addresses first."""
+    {name, id, pv, host, port, addresses} with IPv4 addresses first.
+    Everything here comes from the local network, so it is bounded: at most
+    DISCOVERY_MAX_BYTES of output are read (then avahi-browse is stopped), at
+    most DISCOVERY_MAX_DEVICES devices are kept, and malformed lines are skipped."""
     if not shutil.which("avahi-browse"):
         raise SystemExit("avahi-browse not found (package: avahi)")
+    proc = subprocess.Popen(["avahi-browse", "-rpt", SERVICE], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    chunks, size, deadline = [], 0, time.time() + timeout
     try:
-        out = subprocess.run(["avahi-browse", "-rpt", SERVICE], capture_output=True,
-                             text=True, timeout=timeout).stdout
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        while size < DISCOVERY_MAX_BYTES:
+            left = deadline - time.time()
+            if left <= 0 or not select.select([proc.stdout], [], [], left)[0]:
+                break
+            chunk = os.read(proc.stdout.fileno(), min(65536, DISCOVERY_MAX_BYTES - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+    out = b"".join(chunks).decode("utf-8", "replace")
     devices = {}
     for line in out.splitlines():
         f = line.split(";")
         if len(f) < 10 or f[0] != "=":
             continue
-        name, host, addr, port = _avahi_unescape(f[3]), f[6], f[7], int(f[8])
-        txt = {}
-        for part in f[9].split('" "'):
-            part = part.strip('"')
-            if "=" in part:
-                k, v = part.split("=", 1)
-                txt[k] = v
+        try:
+            name, host, addr, port = _avahi_unescape(f[3])[:64], f[6][:255], f[7][:64], int(f[8])
+            txt = {}
+            for part in f[9].split('" "'):
+                part = part.strip('"')
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    txt[k] = v[:64]
+            pv = int(txt.get("pv", 1))
+        except (ValueError, IndexError):
+            continue  # malformed record from the network: skip it
         key = txt.get("id") or name
-        d = devices.setdefault(key, {"name": name, "id": txt.get("id"), "pv": int(txt.get("pv", 1)),
+        if key not in devices and len(devices) >= DISCOVERY_MAX_DEVICES:
+            continue
+        d = devices.setdefault(key, {"name": name, "id": txt.get("id"), "pv": pv,
                                      "host": host, "port": port, "addresses": []})
-        if addr not in d["addresses"]:
+        if addr not in d["addresses"] and len(d["addresses"]) < DISCOVERY_MAX_ADDRESSES:
             d["addresses"].append(addr)
     for d in devices.values():
         d["addresses"].sort(key=lambda a: (":" in a, a.startswith("fe80")))
