@@ -11,7 +11,7 @@ Everything Sidecar for M1-M2 - leoaba uses, and the versions it was tested with 
 | wf-recorder | 0.6.0-2 | Captures the virtual monitor (wlr-screencopy) and encodes it |
 | ffmpeg | 9.0.2-1 | Used by wf-recorder (libx264 encoder, scaling) |
 | x264 | 0.165.r3222 | H.264 encoder library |
-| avahi | 0.9rc5-1 | Finds the iPad on the network (`avahi-browse`, Bonjour `_opensidecar._tcp`) |
+| avahi | 0.9rc5-1 | Finds the iPad on the network when Wi-Fi is allowed (`avahi-browse`, Bonjour `_opensidecar._tcp`) |
 | python | 3.14.7-1 | The sender (`bin/omarchy-sidecar`), standard library only |
 | wayland | 1.26.0-1 | `wayland-client` and `wayland-scanner`, to build the touch helper |
 | usbmuxd | 1.1.1-4 | USB-C connection to the iPad (tap **Trust** on the iPad the first time) |

@@ -1,6 +1,6 @@
 # Sidecar for M1-M2 - leoaba
 
-Use an iPad as a second display for [Omarchy](https://omarchy.org), the way macOS Sidecar does. It syncs over **Wi-Fi or a USB-C cable**, and touch works as a mouse.
+Use an iPad as a second display for [Omarchy](https://omarchy.org), the way macOS Sidecar does. It syncs over a **USB-C cable** (or, if you opt in, over Wi-Fi), and touch works as a mouse.
 
 **Made for Apple Silicon M1 and M2 MacBooks running Omarchy on Asahi Linux.** Their USB-C ports can't drive an external display under Linux yet (no DisplayPort alt mode), so an iPad is the only second screen you can get. Nothing in the code is M1-specific, and it will probably run on other Omarchy machines, but **it has only been tested on a 13" M1 MacBook Pro (2020)** with an 11" iPad Pro. Reports from M2 owners are very welcome.
 
@@ -12,8 +12,8 @@ A bar widget creates a virtual monitor sized to your iPad and streams it to the 
 
 - Omarchy (Hyprland with Lua config, Quickshell bar).
 - On the iPad: [OpenDisplay](https://github.com/peetzweg/opendisplay), free on [TestFlight](https://testflight.apple.com/join/3NYaY11c).
-- **Wi-Fi:** the iPad and the computer must be on the same network. Phone hotspots may block device-to-device traffic.
-- **USB-C:** works out of the box. The first time you plug the iPad in, tap **Trust** on it.
+- **USB-C (default):** works out of the box. The first time you plug the iPad in, tap **Trust** on it.
+- **Wi-Fi (opt-in):** turn on **Allow Wi-Fi** in the widget. The iPad and the computer must be on the same, trusted network (see [Security](#security)). Phone hotspots may block device-to-device traffic.
 - Packages: setup installs whatever is missing (it asks for your password once): `wf-recorder`, `avahi`, `wayland`, `gcc`, `make`, `pkgconf`, `python`. [DEPENDENCIES.md](DEPENDENCIES.md) lists every package it uses, with the versions it was tested on.
 
 ## Install
@@ -40,19 +40,19 @@ Then click the tablet icon in the bar once. A terminal opens and finishes the se
 | Balanced | 1790×1250 | 56% of the pixels |
 | Light | 1194×834 | 25% of the pixels, lightest on the laptop |
 
-**USB:** if the iPad is plugged in, the cable is used automatically. Plug in during a Wi-Fi session and it moves over; unplug and it falls back to Wi-Fi.
+**Connection:** by default Sidecar only connects over the USB-C cable. With **Allow Wi-Fi** on, the cable is still preferred: plug in during a Wi-Fi session and it moves over; unplug and it falls back to Wi-Fi.
 
 **CLI:**
 
 ```sh
 omarchy-sidecar list                      # iPads on the network
-omarchy-sidecar connect [NAME|IP] [--quality sharp|balanced|light] [--usb|--wifi]
+omarchy-sidecar connect [NAME|IP] [--quality sharp|balanced|light] [--allow-wifi|--wifi]   # default: USB-C only
 omarchy-sidecar quality light             # live
 omarchy-sidecar status
 omarchy-sidecar stop
 ```
 
-If Bonjour can't see the iPad (another subnet, Tailscale), use **By IP** in the widget, or run `omarchy-sidecar connect 192.168.x.y`.
+With Wi-Fi allowed, if Bonjour can't see the iPad (another subnet, Tailscale), use **By IP** in the widget, or run `omarchy-sidecar connect 192.168.x.y --allow-wifi`.
 
 ## How it works
 
@@ -67,8 +67,8 @@ State and a log live in `~/.local/state/omarchy/sidecar*`. The log caps itself a
 
 OpenDisplay is a simple protocol: plain TCP, no encryption and no pairing. The official OpenDisplay Mac sender works the same way. This plugin can't change that on its own, since it would need support in the iPad app and the protocol.
 
-- **Over Wi-Fi the stream is not encrypted.** Anyone on the same network could see it, so only use Wi-Fi on networks you trust.
-- **USB-C keeps the stream off the network completely.** It goes over the cable through usbmuxd. Turn on **USB-C only** in the widget (or use `--usb` on the CLI) and the sender will never connect over Wi-Fi.
+- **Wi-Fi is off by default.** Over Wi-Fi the stream is not encrypted and the iPad isn't authenticated: anyone on the same network could see it, or pretend to be your iPad. So it only happens if you turn on **Allow Wi-Fi** (or pass `--allow-wifi`), and only on networks you trust.
+- **USB-C keeps the stream off the network completely.** It goes over the cable through usbmuxd, and it's the default.
 - **Want encrypted Wi-Fi?** Run it over Tailscale.
 - **Trust on first use:** an iPad found through Bonjour gets pinned to the address it had the first time you used it. Quick-connect and reconnect only dial that address. If an iPad with the same name or ID shows up somewhere else, quick-connect refuses, and you have to pick it from the list yourself (or use `--trust`) to re-pin it. If you type an IP yourself, it connects to that IP directly.
 - **Pointer input from the iPad only works on the virtual iPad display.** The virtual pointer is bound to that output, so it can't reach your laptop's own screen.

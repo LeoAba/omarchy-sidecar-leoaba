@@ -9,7 +9,8 @@ protocol (see References/OpenDisplay-PROTOCOL.md), and turns the iPad's
 touch, pencil and scroll events into pointer input on that output.
 
   omarchy-sidecar list [--json]
-  omarchy-sidecar connect [TARGET] [--usb|--wifi] [--quality sharp|balanced|light]
+  omarchy-sidecar connect [TARGET] [--allow-wifi|--wifi] [--quality sharp|balanced|light]
+                          (default: USB-C only; Wi-Fi is unencrypted and opt-in)
                           [--position right|left|above|below] [--background]
   omarchy-sidecar quality sharp|balanced|light   (live, while connected)
   omarchy-sidecar stop
@@ -287,6 +288,19 @@ def save_trusted(data):
     tmp = TRUST_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     tmp.replace(TRUST_FILE)
+
+
+def looks_like_address(target):
+    """True for an IP address or hostname (optionally :port), without touching the network."""
+    host, sep, port = target.rpartition(":")
+    if not (sep and port.isdigit() and ":" not in host.strip("[]")):
+        host = target
+    host = host.strip("[]")
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", host) is not None
 
 
 def resolve_target(target, trust=False):
@@ -1143,10 +1157,11 @@ class Session:
                         if self.encoder:
                             self.encoder.stop()
                         deadline = time.time() + RECONNECT_GRACE
-                    try:
-                        self.endpoints = resolve_target(self.target)[2] or self.endpoints
-                    except LookupError:
-                        pass
+                    if self.transport_mode != "usb":  # USB-C only never touches the network
+                        try:
+                            self.endpoints = resolve_target(self.target)[2] or self.endpoints
+                        except LookupError:
+                            pass
                     self.stopping.wait(1)
             return ""
         finally:
@@ -1226,7 +1241,7 @@ def cmd_connect(args):
         argv = [sys.executable, os.path.abspath(__file__), "connect"]
         argv += [args.target] if args.target else []
         argv += ["--quality", args.quality, "--position", args.position]
-        argv += ["--usb"] if args.usb else ["--wifi"] if args.wifi else []
+        argv += ["--wifi"] if args.wifi else ["--allow-wifi"] if args.allow_wifi else []
         argv += ["--trust"] if args.trust else []
         write_state(state="connecting", device="iPad", since=int(time.time()))  # target may be a UUID/IP
         trim_log()
@@ -1235,15 +1250,22 @@ def cmd_connect(args):
         print("connecting in background; log:", LOG_FILE)
         return
 
-    transport = "usb" if args.usb else "wifi" if args.wifi else "auto"
+    # USB-C only unless Wi-Fi (an unencrypted stream) is explicitly allowed.
+    transport = "wifi" if args.wifi else "auto" if args.allow_wifi else "usb"
     try:
         try:
             if transport == "usb":
+                if args.target and looks_like_address(args.target):
+                    raise LookupError("Wi-Fi connections are off (the stream is unencrypted). "
+                                      "Allow Wi-Fi in the widget, or pass --allow-wifi.")
+                if not usb_devices():
+                    raise LookupError("No iPad on USB-C. Plug it in, or allow Wi-Fi in the widget "
+                                      "(--allow-wifi); the Wi-Fi stream is unencrypted.")
                 raise LookupError("USB only")
             label, dev_id, endpoints = resolve_target(args.target, trust=args.trust)
             target = args.target or dev_id or label
         except LookupError:
-            # No Wi-Fi route; a cable is still fine.
+            # No Wi-Fi route (or Wi-Fi not allowed); a cable is still fine.
             if transport == "wifi" or not usb_devices():
                 raise
             label, dev_id, endpoints, target = "iPad", None, [], args.target
@@ -1278,8 +1300,10 @@ def main():
                     help="sharp = native pixels (most CPU), balanced = 75%%, light = 50%%")
     pc.add_argument("--position", choices=["right", "left", "above", "below"], default="right")
     how = pc.add_mutually_exclusive_group()
-    how.add_argument("--usb", action="store_true", help="cable only (usbmuxd); default: cable if plugged in, else Wi-Fi")
-    how.add_argument("--wifi", action="store_true", help="Wi-Fi only, even with a cable attached")
+    how.add_argument("--usb", action="store_true", help="USB-C only (the default)")
+    how.add_argument("--allow-wifi", action="store_true",
+                     help="USB-C when plugged in, otherwise Wi-Fi (unencrypted: trusted networks only)")
+    how.add_argument("--wifi", action="store_true", help="Wi-Fi only (unencrypted: trusted networks only)")
     pc.add_argument("--trust", action="store_true",
                     help="trust this iPad at its current network address (re-pins it)")
     pc.add_argument("--background", action="store_true", help="detach and log to " + str(LOG_FILE))

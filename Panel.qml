@@ -31,7 +31,7 @@ Panel {
   property bool scanning: false
   property string quality: "balanced"          // sharp | balanced | light
   property string lastTarget: ""
-  property bool usbOnly: false                 // never connect over Wi-Fi (for untrusted networks)
+  property bool allowWifi: false               // Wi-Fi streams are unencrypted: off unless the user opts in
   property string lastPanel: "2388x1668"       // iPad panel pixels, remembered from the last session
 
   // One line describing the selected quality: what is sent and how it looks.
@@ -127,7 +127,7 @@ Panel {
     lastTarget = t
     savePrefs()
     var cmd = [cli, "connect", "--background", "--quality", quality]
-    if (usbOnly) cmd.push("--usb")
+    if (allowWifi) cmd.push("--allow-wifi")
     if (trust) cmd.push("--trust")
     if (t !== "") cmd.splice(2, 0, t)
     Quickshell.execDetached(cmd)
@@ -185,7 +185,7 @@ Panel {
 
   function savePrefs() {
     if (!prefsLoaded) return
-    prefsFile.setText(JSON.stringify({ quality: quality, lastTarget: lastTarget, lastPanel: lastPanel, usbOnly: usbOnly }, null, 2) + "\n")
+    prefsFile.setText(JSON.stringify({ quality: quality, lastTarget: lastTarget, lastPanel: lastPanel, allowWifi: allowWifi }, null, 2) + "\n")
   }
 
   function loadPrefs(raw) {
@@ -194,7 +194,7 @@ Panel {
     try { p = JSON.parse(raw || "{}") || {} } catch (e) { p = {} }
     if (p.quality === "sharp" || p.quality === "balanced" || p.quality === "light") quality = p.quality
     lastTarget = String(p.lastTarget || "")
-    usbOnly = p.usbOnly === true
+    allowWifi = p.allowWifi === true
     if (/^[0-9]+x[0-9]+$/.test(String(p.lastPanel || ""))) lastPanel = p.lastPanel
     prefsLoaded = true
   }
@@ -293,7 +293,7 @@ Panel {
     cursorActive = false
     cursorIndex = 0
     editingHost = false
-    if (opened && scanOnOpen) scan()
+    if (opened && scanOnOpen && allowWifi) scan()
   }
 
   implicitWidth: button.implicitWidth
@@ -323,16 +323,16 @@ Panel {
 
   // ------------------------------------------------------------------ popup
 
-  // Keyboard cursor order: connect/disconnect, quality ×3, host entry, rescan, USB-C only, devices.
+  // Keyboard cursor order: connect/disconnect, quality ×3, host entry, rescan, allow Wi-Fi, devices.
   readonly property var actions: {
     var list = [
       function() { root.toggleConnection() },
       function() { root.setQuality("sharp") },
       function() { root.setQuality("balanced") },
       function() { root.setQuality("light") },
-      function() { root.beginHostEntry() },
-      function() { root.scan() },
-      function() { root.usbOnly = !root.usbOnly; root.savePrefs() }
+      function() { if (root.allowWifi) root.beginHostEntry() },
+      function() { if (root.allowWifi) root.scan() },
+      function() { root.allowWifi = !root.allowWifi; root.savePrefs(); if (root.allowWifi) root.scan() }
     ]
     for (var i = 0; i < otherDevices.length; i++) {
       (function(d) { list.push(function() { root.connectTo(d.id || d.name, true) }) })(otherDevices[i])
@@ -513,12 +513,12 @@ Panel {
         // ---------- Connection ----------
         Item {
           width: parent.width
-          implicitHeight: Math.max(connLabels.implicitHeight, usbOnlyButton.implicitHeight)
+          implicitHeight: Math.max(connLabels.implicitHeight, wifiButton.implicitHeight)
 
           Column {
             id: connLabels
             anchors.left: parent.left
-            anchors.right: usbOnlyButton.left
+            anchors.right: wifiButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(4)
@@ -530,8 +530,8 @@ Panel {
             }
             Text {
               textFormat: Text.PlainText
-              text: root.usbOnly ? "USB-C cable only · nothing goes over the network"
-                                 : "USB-C when plugged in, otherwise Wi-Fi (unencrypted)"
+              text: root.allowWifi ? "USB-C when plugged in, otherwise Wi-Fi · unencrypted, use trusted networks only"
+                                   : "USB-C cable only · Wi-Fi is off (its stream is unencrypted)"
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
@@ -541,20 +541,21 @@ Panel {
           }
 
           ActionButton {
-            id: usbOnlyButton
+            id: wifiButton
             index: 6
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: root.glyphUsb
-            text: "USB-C only"
-            active: root.usbOnly
+            iconText: root.glyphWifi
+            text: "Allow Wi-Fi"
+            active: root.allowWifi
           }
         }
 
-        PanelSeparator { foreground: root.bar.foreground }
+        PanelSeparator { visible: root.allowWifi; foreground: root.bar.foreground }
 
-        // ---------- Devices ----------
+        // ---------- Devices (only when Wi-Fi is allowed) ----------
         Column {
+          visible: root.allowWifi
           width: parent.width
           spacing: Style.space(10)
 
