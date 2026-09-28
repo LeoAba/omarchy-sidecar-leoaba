@@ -63,6 +63,16 @@ If Bonjour can't see the iPad (another subnet, Tailscale), use **By IP** in the 
 
 State and a log live in `~/.local/state/omarchy/sidecar*`. The log caps itself at 2 MB.
 
+## Security
+
+OpenDisplay is a simple protocol: plain TCP, no encryption and no pairing. The official OpenDisplay Mac sender works the same way. This plugin can't change that on its own, since it would need support in the iPad app and the protocol.
+
+- **Over Wi-Fi the stream is not encrypted.** Anyone on the same network could see it, so only use Wi-Fi on networks you trust.
+- **USB-C keeps the stream off the network completely.** It goes over the cable through usbmuxd. Turn on **USB-C only** in the widget (or use `--usb` on the CLI) and the sender will never connect over Wi-Fi.
+- **Want encrypted Wi-Fi?** Run it over Tailscale.
+- **Trust on first use:** an iPad found through Bonjour gets pinned to the address it had the first time you used it. Quick-connect and reconnect only dial that address. If an iPad with the same name or ID shows up somewhere else, quick-connect refuses, and you have to pick it from the list yourself (or use `--trust`) to re-pin it. If you type an IP yourself, it connects to that IP directly.
+- **Pointer input from the iPad only works on the virtual iPad display.** The virtual pointer is bound to that output, so it can't reach your laptop's own screen.
+
 ## Known issues
 
 - **Long sessions slow Hyprland 0.56.2 down. This is the one open problem.** Capturing a virtual monitor for a long time makes Hyprland use more and more CPU. The frame rate drops, and disconnecting can freeze the desktop for a few seconds. Hyprland recovers by itself afterwards.

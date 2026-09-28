@@ -49,6 +49,7 @@ STATE_FILE = STATE_DIR / "sidecar.json"
 LOG_FILE = STATE_DIR / "sidecar.log"
 LOG_MAX = 2 << 20   # trim sidecar.log past 2 MB ...
 LOG_KEEP = 1 << 20  # ... down to its newest 1 MB
+TRUST_FILE = STATE_DIR / "sidecar-trusted.json"  # iPad id -> addresses it was first trusted at
 OUTPUT_RECORD = STATE_DIR / "sidecar-output"  # name of the output this install created
 QUALITY_REQUEST = STATE_DIR / "sidecar-quality"  # `quality` writes it, then SIGUSR1s the sender
 # The touch helper is built by ../setup next to its source (pointer/).
@@ -273,8 +274,28 @@ def discover(timeout=4.0):
     return sorted(devices.values(), key=lambda d: d["name"].lower())
 
 
-def resolve_target(target):
-    """Return (label, id, [(host, port), ...]) for a name, id or HOST[:PORT]."""
+def load_trusted():
+    try:
+        data = json.loads(TRUST_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_trusted(data):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = TRUST_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(TRUST_FILE)
+
+
+def resolve_target(target, trust=False):
+    """Return (label, id, [(host, port), ...]) for a name, id or HOST[:PORT].
+
+    Bonjour names and ids can be advertised by anyone on the network, so an iPad
+    found by discovery is pinned to the addresses it had when first used (trust
+    on first use). Later it is only dialled at those addresses; if it shows up
+    elsewhere, the user has to pick it explicitly (`trust=True`) to re-pin it."""
     if target:
         host, sep, port = target.rpartition(":")
         if not (sep and port.isdigit() and ":" not in host.strip("[]")):
@@ -289,7 +310,19 @@ def resolve_target(target):
             return target, None, [(host, int(port))]
     for d in discover():
         if target in (None, "", d["name"], d["id"]) or (target and target.lower() == d["name"].lower()):
-            return d["name"], d["id"], [(a, d["port"]) for a in d["addresses"]]
+            key = d["id"] or d["name"]
+            trusted = load_trusted()
+            pinned = (trusted.get(key) or {}).get("addresses") or []
+            if trust or not pinned:
+                trusted[key] = {"name": d["name"], "addresses": d["addresses"]}
+                save_trusted(trusted)
+                pinned = d["addresses"]
+            addrs = [a for a in d["addresses"] if a in pinned]
+            if not addrs:
+                raise LookupError(f"{d['name']!r} is answering from a different address than before "
+                                  f"({', '.join(d['addresses'][:2])}). If it is really your iPad, pick it "
+                                  "from the list in the widget (or add --trust).")
+            return d["name"], d["id"], [(a, d["port"]) for a in addrs]
     raise LookupError(f"no OpenDisplay receiver found{' matching ' + repr(target) if target else ''}"
                       " — is the app open on the iPad and on the same network?")
 
@@ -1194,6 +1227,7 @@ def cmd_connect(args):
         argv += [args.target] if args.target else []
         argv += ["--quality", args.quality, "--position", args.position]
         argv += ["--usb"] if args.usb else ["--wifi"] if args.wifi else []
+        argv += ["--trust"] if args.trust else []
         write_state(state="connecting", device="iPad", since=int(time.time()))  # target may be a UUID/IP
         trim_log()
         with open(LOG_FILE, "a") as logf:
@@ -1206,7 +1240,7 @@ def cmd_connect(args):
         try:
             if transport == "usb":
                 raise LookupError("USB only")
-            label, dev_id, endpoints = resolve_target(args.target)
+            label, dev_id, endpoints = resolve_target(args.target, trust=args.trust)
             target = args.target or dev_id or label
         except LookupError:
             # No Wi-Fi route; a cable is still fine.
@@ -1246,6 +1280,8 @@ def main():
     how = pc.add_mutually_exclusive_group()
     how.add_argument("--usb", action="store_true", help="cable only (usbmuxd); default: cable if plugged in, else Wi-Fi")
     how.add_argument("--wifi", action="store_true", help="Wi-Fi only, even with a cable attached")
+    pc.add_argument("--trust", action="store_true",
+                    help="trust this iPad at its current network address (re-pins it)")
     pc.add_argument("--background", action="store_true", help="detach and log to " + str(LOG_FILE))
     ps = sub.add_parser("status")
     ps.add_argument("--json", action="store_true")

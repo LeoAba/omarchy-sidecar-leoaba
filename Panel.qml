@@ -31,6 +31,7 @@ Panel {
   property bool scanning: false
   property string quality: "balanced"          // sharp | balanced | light
   property string lastTarget: ""
+  property bool usbOnly: false                 // never connect over Wi-Fi (for untrusted networks)
   property string lastPanel: "2388x1668"       // iPad panel pixels, remembered from the last session
 
   // One line describing the selected quality: what is sent and how it looks.
@@ -118,12 +119,16 @@ Panel {
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", setupScript])
   }
 
-  function connectTo(target) {
+  // `trust` is set when the user explicitly picks an iPad from the list: it
+  // (re)pins that iPad to its current address. Quick-connect never re-pins.
+  function connectTo(target, trust) {
     if (needsSetup) { runSetup(); return }
     var t = String(target || "")
     lastTarget = t
     savePrefs()
     var cmd = [cli, "connect", "--background", "--quality", quality]
+    if (usbOnly) cmd.push("--usb")
+    if (trust) cmd.push("--trust")
     if (t !== "") cmd.splice(2, 0, t)
     Quickshell.execDetached(cmd)
     status = { state: "connecting", device: t || "iPad" }
@@ -180,7 +185,7 @@ Panel {
 
   function savePrefs() {
     if (!prefsLoaded) return
-    prefsFile.setText(JSON.stringify({ quality: quality, lastTarget: lastTarget, lastPanel: lastPanel }, null, 2) + "\n")
+    prefsFile.setText(JSON.stringify({ quality: quality, lastTarget: lastTarget, lastPanel: lastPanel, usbOnly: usbOnly }, null, 2) + "\n")
   }
 
   function loadPrefs(raw) {
@@ -189,6 +194,7 @@ Panel {
     try { p = JSON.parse(raw || "{}") || {} } catch (e) { p = {} }
     if (p.quality === "sharp" || p.quality === "balanced" || p.quality === "light") quality = p.quality
     lastTarget = String(p.lastTarget || "")
+    usbOnly = p.usbOnly === true
     if (/^[0-9]+x[0-9]+$/.test(String(p.lastPanel || ""))) lastPanel = p.lastPanel
     prefsLoaded = true
   }
@@ -317,7 +323,7 @@ Panel {
 
   // ------------------------------------------------------------------ popup
 
-  // Keyboard cursor order: connect/disconnect, quality ×3, host entry, rescan, devices.
+  // Keyboard cursor order: connect/disconnect, quality ×3, host entry, rescan, USB-C only, devices.
   readonly property var actions: {
     var list = [
       function() { root.toggleConnection() },
@@ -325,10 +331,11 @@ Panel {
       function() { root.setQuality("balanced") },
       function() { root.setQuality("light") },
       function() { root.beginHostEntry() },
-      function() { root.scan() }
+      function() { root.scan() },
+      function() { root.usbOnly = !root.usbOnly; root.savePrefs() }
     ]
     for (var i = 0; i < otherDevices.length; i++) {
-      (function(d) { list.push(function() { root.connectTo(d.id || d.name) }) })(otherDevices[i])
+      (function(d) { list.push(function() { root.connectTo(d.id || d.name, true) }) })(otherDevices[i])
     }
     return list
   }
@@ -503,6 +510,49 @@ Panel {
 
         PanelSeparator { foreground: root.bar.foreground }
 
+        // ---------- Connection ----------
+        Item {
+          width: parent.width
+          implicitHeight: Math.max(connLabels.implicitHeight, usbOnlyButton.implicitHeight)
+
+          Column {
+            id: connLabels
+            anchors.left: parent.left
+            anchors.right: usbOnlyButton.left
+            anchors.rightMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(4)
+
+            PanelSectionHeader {
+              text: "CONNECTION"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: root.usbOnly ? "USB-C cable only · nothing goes over the network"
+                                 : "USB-C when plugged in, otherwise Wi-Fi (unencrypted)"
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              width: parent.width
+            }
+          }
+
+          ActionButton {
+            id: usbOnlyButton
+            index: 6
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.glyphUsb
+            text: "USB-C only"
+            active: root.usbOnly
+          }
+        }
+
+        PanelSeparator { foreground: root.bar.foreground }
+
         // ---------- Devices ----------
         Column {
           width: parent.width
@@ -552,7 +602,7 @@ Panel {
               required property int index
               width: parent.width
               dev: modelData
-              rowIndex: 6 + index
+              rowIndex: 7 + index
             }
           }
 
