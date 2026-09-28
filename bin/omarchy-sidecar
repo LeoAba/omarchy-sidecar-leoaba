@@ -188,7 +188,7 @@ def finite(v, lo, hi, default=None):
     """v as a float within [lo, hi], or `default` if it is missing, non-numeric or non-finite."""
     try:
         f = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # e.g. a 400-digit JSON integer
         return default
     return min(max(f, lo), hi) if math.isfinite(f) else default
 
@@ -943,11 +943,19 @@ class Session:
             payload, buf = bytes(buf[4:4 + n]), buf[4 + n:]
             try:
                 msg = json.loads(payload)
-            except ValueError:
+            except (ValueError, RecursionError):  # malformed or absurdly nested JSON
                 continue
             if not isinstance(msg, dict):
                 continue
-            self.handle(msg)
+            try:
+                self.handle(msg)
+            except (Closed, OSError, RuntimeError):
+                raise  # session control, socket errors, Hyprland failures
+            except Exception as e:
+                # Anything else a receiver message triggers (wrong types, huge
+                # numbers, ...) ends this connection instead of the sender.
+                log("protocol error:", type(e).__name__, str(e)[:120])
+                raise Closed("protocol error")
 
     def handle(self, msg):
         t = msg.get("type")
@@ -1078,8 +1086,9 @@ class Session:
                     self.teardown_connection()
                     if self.stopping.is_set() or reason == "closing":
                         return "iPad app closed" if reason == "closing" else ""
-                    if reason == "invalid hello":  # not a receiver we can drive; don't redial it
-                        return "receiver sent an invalid display description"
+                    if reason in ("invalid hello", "protocol error"):  # don't redial a misbehaving receiver
+                        return ("receiver sent an invalid display description" if reason == "invalid hello"
+                                else "receiver broke the protocol")
                     if reason == "cable":
                         log("iPad plugged in — moving the session to USB")
                         if self.encoder:
